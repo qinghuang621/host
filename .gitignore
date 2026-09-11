@@ -1,0 +1,15 @@
+# ---- .NET / C# 构建产物 ----
+bin/
+obj/
+
+# ---- Visual Studio / Rider 本地设置 ----
+.vs/
+.idea/
+*.user
+*.suo
+*.userprefs
+
+# ---- 其他 ----
+*.log
+*.tmp
+Thumbs.db

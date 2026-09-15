@@ -141,6 +141,9 @@ namespace GamepadSpeedController
                 : (imu.Status == 3 ? Brushes.OrangeRed : Brushes.Gray);
             TxtTemp.Text = $"{imu.TempX10 / 10.0:F1}℃";
 
+            // 倾斜角：车体 z 轴与竖直向上的夹角，0~180°
+            TxtTilt.Text = $"{imu.TiltTheta:F1}°";
+
             // 四元数数值（固件顺序 w,x,y,z）
             TxtQuat.Text = norm2 > 0.001
                 ? $"(w={imu.Qw:F3}, x={imu.Qx:F3}, y={imu.Qy:F3}, z={imu.Qz:F3})"

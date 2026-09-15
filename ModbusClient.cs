@@ -123,6 +123,9 @@ namespace GamepadSpeedController
                 AutoDuty = ReadFloat(regs[12], regs[13]), // 0x015C
                 Status   = regs[14],                       // 0x015E
                 TempX10  = (short)regs[15],                // 0x015F
+                // 倾斜角：车体 z 轴与竖直向上的夹角，0~180°
+                // 0x016E 起 2 只 → 偏移 0x1E (30)
+                TiltTheta = ReadFloat(regs[30], regs[31]), // 0x016E
                 // 四元数：0x0174 起 8 只 → 偏移 0x24 (36)，顺序 (w, x, y, z)
                 Qw = ReadFloat(regs[36], regs[37]),        // 0x0174
                 Qx = ReadFloat(regs[38], regs[39]),        // 0x0176
@@ -394,6 +397,7 @@ namespace GamepadSpeedController
         public float AutoDuty;  // %, 自动模式当前输出占空比
         public ushort Status;   // 0=离线 1=加热中 2=运行 3=错误
         public short TempX10;   // ℃×10，如 343 = 34.3℃
+        public float TiltTheta; // 车体 z 轴与竖直向上的夹角，0~180°
         public float Qw;        // 四元数实部
         public float Qx;        // 四元数 X 分量
         public float Qy;        // 四元数 Y 分量

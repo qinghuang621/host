@@ -20,6 +20,9 @@ namespace GamepadSpeedController
         private FanSerialClient? _fan;
         private bool _fanConnected;
 
+        // 姿态3D可视化窗口（按需打开；关闭后置 null）
+        private AttitudeWindow? _attitudeWindow;
+
         // 速度命令源（UI 线程写入，通信线程读取）
         private float _cmdVx, _cmdVy, _cmdWz;
         private bool _cmdSendOnce;
@@ -281,6 +284,22 @@ namespace GamepadSpeedController
             return 0f;
         }
 
+        // ========== 姿态3D可视化 ==========
+
+        private void BtnAttitude3D_Click(object sender, RoutedEventArgs e)
+        {
+            if (_attitudeWindow == null || !_attitudeWindow.IsLoaded)
+            {
+                _attitudeWindow = new AttitudeWindow { Owner = this };
+                _attitudeWindow.Closed += (_, _) => _attitudeWindow = null;
+                _attitudeWindow.Show();
+            }
+            else
+            {
+                _attitudeWindow.Activate();
+            }
+        }
+
         // ========== 单一通信线程 ==========
 
         private void StartCommThread()
@@ -355,6 +374,22 @@ namespace GamepadSpeedController
                     }
                 }
 
+                // ---- 3. 姿态3D窗口若打开则每 tick 读 IMU 姿态 ----
+                // IMU 块 0x0150~0x015F，响应 37B ≈ 3.3ms 传输，与电机监控错峰即可
+                if (_attitudeWindow != null && _mb != null)
+                {
+                    try
+                    {
+                        var imu = _mb.ReadImu();
+                        Dispatcher.BeginInvoke(new Action(() =>
+                            _attitudeWindow?.UpdateAngles(imu)));
+                    }
+                    catch (Exception ex)
+                    {
+                        OnDebugLog($"IMU read error: {ex.Message}");
+                    }
+                }
+
                 Thread.Sleep(100);
             }
         }
@@ -376,7 +411,7 @@ namespace GamepadSpeedController
             // 映射到车体速度
             // 手柄 Y(上下) → vy(前后，前+)，手柄 X(左右) → vx(右移，右+)
             // 注意：vx/vz 的**变量名是"右+/逆时针+"语义**，与固件 running/kinematics.c 一致。
-            // 详见 接口文档.md §5.6「坐标与符号约定」。
+            // 详见 接口文档.md §5.1「电机控制区」。
             var (vx, vy, wz) = MotionMapper.Map(leftY, leftX, rightX, _gear);
 
             // 写入命令缓冲区

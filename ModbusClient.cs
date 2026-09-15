@@ -17,9 +17,13 @@ namespace GamepadSpeedController
          * ⚠️ 命名说明：0x0014 在固件里是 **VY_HI**（前后轴），不是 VX_HI。
          * 6 个寄存器依次为 VY 高/低、VX 高/低、WZ 高/低，占 0x0014~0x0019。
          * 因此这里命名为"速度块基址"，避免与固件的 VX（0x0016）混淆。
-         * 详见 接口文档.md §5.6「坐标与符号约定」。 */
+         * 详见 接口文档.md §5.1「电机控制区」。 */
         private const ushort RegBodyVelBase = 0x0014;
         private const ushort RegMotorStat = 0x0064;
+
+        // IMU 姿态输出区起始地址（0x0150 = 336）。共 16 只：roll/pitch/yaw/gyro_xyz/auto_duty/status/temp。
+        // 详见 接口文档.md §6.6「IMU 姿态输出区」。
+        private const ushort RegImu = 0x0150;
 
         private readonly SerialPort _port;
         private readonly object _lock = new();
@@ -95,6 +99,36 @@ namespace GamepadSpeedController
                 };
             }
             return result;
+        }
+
+        /// <summary>
+        /// 读 IMU 姿态块 + 姿态四元数。
+        /// 一次读 0x0150 起 44 只（0x0150~0x017B）：
+        ///   0x0150~0x015F (16 只)  IMU 姿态 + 温度
+        ///   0x0160~0x016F (16 只)  LUT 查表值（只读无害，直接跳过）
+        ///   0x0174~0x017B (8 只)   姿态四元数 (w, x, y, z)
+        /// 字段口径与固件 bsp_imu.h / 接口文档.md §6.6、§6.8 完全一致。
+        /// </summary>
+        public ImuData ReadImu()
+        {
+            ushort[] regs = ReadHoldingRegisters(RegImu, 44);
+            return new ImuData
+            {
+                Roll     = ReadFloat(regs[0],  regs[1]),   // 0x0150
+                Pitch    = ReadFloat(regs[2],  regs[3]),   // 0x0152
+                Yaw      = ReadFloat(regs[4],  regs[5]),   // 0x0154
+                GyroX    = ReadFloat(regs[6],  regs[7]),   // 0x0156
+                GyroY    = ReadFloat(regs[8],  regs[9]),   // 0x0158
+                GyroZ    = ReadFloat(regs[10], regs[11]),  // 0x015A
+                AutoDuty = ReadFloat(regs[12], regs[13]), // 0x015C
+                Status   = regs[14],                       // 0x015E
+                TempX10  = (short)regs[15],                // 0x015F
+                // 四元数：0x0174 起 8 只 → 偏移 0x24 (36)，顺序 (w, x, y, z)
+                Qw = ReadFloat(regs[36], regs[37]),        // 0x0174
+                Qx = ReadFloat(regs[38], regs[39]),        // 0x0176
+                Qy = ReadFloat(regs[40], regs[41]),        // 0x0178
+                Qz = ReadFloat(regs[42], regs[43]),        // 0x017A
+            };
         }
 
         // ========== 核心通信：对齐 Modbus Poll 的最简实现 ==========
@@ -342,5 +376,27 @@ namespace GamepadSpeedController
         public float Torque;
         public ushort TempMos;
         public ushort TempRotor;
+    }
+
+    /// <summary>
+    /// IMU 姿态块 + 姿态四元数解析结果。
+    /// 字段口径与固件一致：roll/pitch/yaw 单位 deg，gyro 单位 rad/s，temp_x10 单位 ℃×10。
+    /// 四元数 (Qw, Qx, Qy, Qz) 为 body→earth，已归一化；当 ‖q‖≈0 时应回退用欧拉角。
+    /// </summary>
+    public struct ImuData
+    {
+        public float Roll;      // deg, 右倾为正
+        public float Pitch;     // deg, 抬头为正
+        public float Yaw;       // deg, 逆时针为正（六轴无磁力计，会持续漂移）
+        public float GyroX;     // rad/s
+        public float GyroY;     // rad/s
+        public float GyroZ;     // rad/s
+        public float AutoDuty;  // %, 自动模式当前输出占空比
+        public ushort Status;   // 0=离线 1=加热中 2=运行 3=错误
+        public short TempX10;   // ℃×10，如 343 = 34.3℃
+        public float Qw;        // 四元数实部
+        public float Qx;        // 四元数 X 分量
+        public float Qy;        // 四元数 Y 分量
+        public float Qz;        // 四元数 Z 分量
     }
 }

@@ -102,12 +102,15 @@ namespace GamepadSpeedController
         }
 
         /// <summary>
-        /// 读 IMU 姿态块 + 姿态四元数。
+        /// 读 IMU 姿态块 + 实时 θ + 姿态四元数。
         /// 一次读 0x0150 起 44 只（0x0150~0x017B）：
         ///   0x0150~0x015F (16 只)  IMU 姿态 + 温度
-        ///   0x0160~0x016F (16 只)  LUT 查表值（只读无害，直接跳过）
-        ///   0x0174~0x017B (8 只)   姿态四元数 (w, x, y, z)
-        /// 字段口径与固件 bsp_imu.h / 接口文档.md §6.6、§6.8 完全一致。
+        ///   0x0160~0x016D (14 只)  LUT 表 + 魔数（只读无害，直接跳过）
+        ///   0x016E~0x016F ( 2 只)  实时总倾角 θ（float32）
+        ///   0x0170~0x0173 ( 4 只)  空白（断电保持区尾部，恒 0）
+        ///   0x0174~0x017B ( 8 只)  姿态四元数 (w, x, y, z)
+        /// 字段口径与固件 components/algorithm/ins_task.h::ins_snapshot_t 及
+        /// 接口文档.md §6.6、§6.7、§6.8 完全一致。
         /// </summary>
         public ImuData ReadImu()
         {

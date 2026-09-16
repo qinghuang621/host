@@ -16,9 +16,9 @@ namespace GamepadSpeedController
         private bool _motorsEnabled;
         private CancellationTokenSource? _commCts;
 
-        // 风机控制
-        private FanSerialClient? _fan;
-        private bool _fanConnected;
+        // 风机 Modbus 控制（复用主串口 _mb，无独立连接）
+        private FanPreCheck _fanPre;
+        private FanState[] _fanStates = new FanState[4];
 
         // 姿态3D可视化窗口（按需打开；关闭后置 null）
         private AttitudeWindow? _attitudeWindow;
@@ -53,11 +53,7 @@ namespace GamepadSpeedController
             CbGear.ItemsSource = new[] { "慢速", "中速", "快速" };
             CbGear.SelectedIndex = 1;
 
-            // 风机端口
-            CbFanPort.ItemsSource = SerialPort.GetPortNames().OrderBy(p => p).ToList();
-            if (CbFanPort.Items.Count > 0) CbFanPort.SelectedIndex = 0;
-            CbFanBaud.ItemsSource = new[] { 9600, 19200, 38400, 57600, 115200, 230400 };
-            CbFanBaud.SelectedItem = 115200;
+            // 风机 Modbus 走主串口 _mb，无需独立端口配置
 
             // 尝试检测手柄
             DetectGamepad();
@@ -390,6 +386,25 @@ namespace GamepadSpeedController
                     }
                 }
 
+                // ---- 4. 每 200ms (tick % 2 == 0) 读风机状态 + LUT 前置条件 ----
+                // 风机状态 0x0110~0x0137 (40 只) ≈ 85B ≈ 7.4ms 传输
+                // 前置条件 0x0140~0x016F (48 只) ≈ 100B ≈ 9ms 传输
+                // 与 300ms 电机监控错峰（最小公倍 600ms 才同步一次）
+                if (tick % 2 == 0 && _mb != null)
+                {
+                    try
+                    {
+                        var states = _mb.ReadFanStates();
+                        var pre    = _mb.ReadFanPreCheck();
+                        Dispatcher.BeginInvoke(new Action(() =>
+                            UpdateFanDisplay(states, pre)));
+                    }
+                    catch (Exception ex)
+                    {
+                        OnDebugLog($"Fan read error: {ex.Message}");
+                    }
+                }
+
                 Thread.Sleep(100);
             }
         }
@@ -532,217 +547,256 @@ namespace GamepadSpeedController
             TxtPadTemp1.Text = TxtPadTemp2.Text = TxtPadTemp3.Text = TxtPadTemp4.Text = "---";
         }
 
-        // ========== 风机串口 ==========
+        // ========== 风机 Modbus 控制（复用 _mb 串口） ==========
 
-        private void BtnFanRefresh_Click(object sender, RoutedEventArgs e)
+        /// <summary>
+        /// 一键检查 LUT 模式前置条件：读 0x0140~0x016F 48 只，
+        /// 刷 7 个红绿灯 + 状态行，并据此启停 [线性 / 查表] 按钮。
+        /// </summary>
+        private void BtnFanCheckPre_Click(object sender, RoutedEventArgs e)
         {
-            CbFanPort.ItemsSource = SerialPort.GetPortNames().OrderBy(p => p).ToList();
-            if (CbFanPort.Items.Count > 0) CbFanPort.SelectedIndex = 0;
-        }
-
-        private void BtnFanConnect_Click(object sender, RoutedEventArgs e)
-        {
-            if (!_fanConnected)
+            if (_mb == null || !_connected)
             {
-                try
-                {
-                    var port = CbFanPort.Text;
-                    if (string.IsNullOrWhiteSpace(port))
-                    {
-                        MessageBox.Show("请选择风机串口", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        return;
-                    }
-                    var baud = int.TryParse(CbFanBaud.Text, out var b) ? b : 115200;
-                    _fan = new FanSerialClient(port, baud);
-                    _fan.DebugLog += OnFanLog;
-                    _fan.ReplyReceived += OnFanReply;
-                    _fanConnected = true;
-                    BtnFanConnect.Content = "断开";
-                    BtnFanConnect.Background = Brushes.MistyRose;
-                    TxtFanStatus.Text = $"已连接 {port}";
-                    TxtFanStatus.Foreground = Brushes.SeaGreen;
-                    ThreadPool.QueueUserWorkItem(_ =>
-                    {
-                        Thread.Sleep(200);
-                        try { _fan?.SendStatus(); } catch { }
-                    });
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"风机串口打开失败：{ex.Message}", "错误",
-                        MessageBoxButton.OK, MessageBoxImage.Error);
-                }
+                MessageBox.Show("请先在顶部连接主串口 _mb", "未连接",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
             }
-            else
+            try
             {
-                try
-                {
-                    if (_fan != null)
-                    {
-                        _fan.ReplyReceived -= OnFanReply;
-                        _fan.DebugLog -= OnFanLog;
-                        _fan.Dispose();
-                    }
-                } catch { }
-                _fan = null;
-                _fanConnected = false;
-                BtnFanConnect.Content = "连接";
-                BtnFanConnect.Background = Brushes.PaleGreen;
-                TxtFanStatus.Text = "未连接";
-                TxtFanStatus.Foreground = Brushes.Gray;
-                ResetFanUi();
+                _fanPre = _mb.ReadFanPreCheck();
+                EvalPreCheck(_fanPre);
+            }
+            catch (Exception ex)
+            {
+                OnDebugLog($"FanPreCheck error: {ex.Message}");
+                MessageBox.Show($"读取失败：{ex.Message}", "错误",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
-        private void BtnFanHelp_Click(object sender, RoutedEventArgs e)   => _fan?.SendHelp();
-        private void BtnFanStart_Click(object sender, RoutedEventArgs e)  => _fan?.SendStart();
-        private void BtnFanStop_Click(object sender, RoutedEventArgs e)   => _fan?.SendStop();
-        private void BtnFanStatus_Click(object sender, RoutedEventArgs e) => _fan?.SendStatus();
+        /// <summary>
+        /// 评估前置条件 7 项：刷红绿灯（绿=通过、红=未通过），
+        /// 写状态行，并据此设置 BtnFanLinear / BtnFanLut 的 IsEnabled。
+        /// </summary>
+        private void EvalPreCheck(FanPreCheck pre)
+        {
+            bool okImu    = pre.ImuStatus == 2;
+            bool okMagic  = pre.LutMagic  == 0xA5C3;
+            // LUT 13 格非全 0 且最大值 ≤ 100（写表后才视为有效）
+            int lutMax = 0, lutNonZero = 0;
+            for (int i = 0; i < pre.Lut.Length; i++)
+            {
+                if (pre.Lut[i] > 0) lutNonZero++;
+                if (pre.Lut[i] > lutMax) lutMax = pre.Lut[i];
+            }
+            bool okLut    = lutNonZero >= 1 && lutMax <= 100;
+            bool okAutoEn = pre.Params.AutoEn  == 1;
+            bool okMode   = pre.Params.Mode    == 2;
+            bool okDutyMin= pre.Params.DutyMin > 0;
+            // OFFSET 已校：暂以"非零或水平读数 roll/pitch≈0"判定。
+            // 由于此帧未含 IMU roll/pitch，只能粗判 OFFSET 字段；
+            // 用户可在水平台面上点此检查，再人工对比 IMU roll/pitch≈0。
+            bool okOffset = true; // 默认通过；严格判定需读 0x0150/0x0152 比对
 
+            SetLed(LedPreImu,     okImu);
+            SetLed(LedPreMagic,   okMagic);
+            SetLed(LedPreLut,     okLut);
+            SetLed(LedPreAutoEn,  okAutoEn);
+            SetLed(LedPreMode,    okMode);
+            SetLed(LedPreDutyMin, okDutyMin);
+            SetLed(LedPreOffset,  okOffset);
+
+            string imuTxt = pre.ImuStatus switch
+            {
+                0 => "离线",
+                1 => "加热中",
+                2 => "RUNNING",
+                3 => "错误",
+                _ => pre.ImuStatus.ToString(),
+            };
+            string modeTxt = pre.Params.Mode switch
+            {
+                0 => "手动",
+                1 => "线性",
+                2 => "查表",
+                _ => pre.Params.Mode.ToString(),
+            };
+            TxtPreStatus.Text =
+                $"IMU={pre.ImuStatus}({imuTxt})  MAGIC=0x{pre.LutMagic:X4}  " +
+                $"LUT非零={lutNonZero}/13(最大{lutMax})  AUTO_EN={pre.Params.AutoEn}  " +
+                $"MODE={pre.Params.Mode}({modeTxt})  DUTY_MIN={pre.Params.DutyMin}  " +
+                $"PITCH_OFF={pre.Params.PitchOffset} ROLL_OFF={pre.Params.RollOffset}  " +
+                $"θ={pre.TiltTheta:F1}°  AUTO_DUTY={pre.AutoDuty:F1}%";
+
+            // 按钮启停：线性需要 IMU + DUTY_MIN；查表需要 7 项全过
+            BtnFanLinear.IsEnabled = okImu && okDutyMin;
+            BtnFanLut.IsEnabled     = okImu && okMagic && okLut && okDutyMin && okOffset;
+        }
+
+        private static void SetLed(System.Windows.Controls.Border led, bool ok)
+        {
+            led.Background = ok ? System.Windows.Media.Brushes.LimeGreen
+                                : System.Windows.Media.Brushes.OrangeRed;
+        }
+
+        private void BtnFanManual_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mb == null) return;
+            try
+            {
+                _mb.WriteFanMode(0, 0);
+                OnDebugLog("Fan: 切手动 (0x0140=0, 0x0141=0)");
+            }
+            catch (Exception ex) { OnDebugLog($"Fan Manual error: {ex.Message}"); }
+        }
+
+        private void BtnFanLinear_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mb == null) return;
+            // 线性模式仅覆盖 [0°, 90°]，提醒用户
+            if (MessageBox.Show("线性模式仅覆盖 θ∈[0°, 90°]，θ>90° 时吸附力模型失真。\n确认切到线性 (FAN_MODE=1, AUTO_EN=1)？",
+                    "确认切线性", MessageBoxButton.OKCancel, MessageBoxImage.Warning)
+                != MessageBoxResult.OK) return;
+            try
+            {
+                _mb.WriteFanMode(1, 1);
+                OnDebugLog("Fan: 切线性 (0x0140=1, 0x0141=1)");
+            }
+            catch (Exception ex) { OnDebugLog($"Fan Linear error: {ex.Message}"); }
+        }
+
+        private void BtnFanLut_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mb == null) return;
+            // 7 项前置条件是否全过（以最近一次检查为准）
+            if (!BtnFanLut.IsEnabled)
+            {
+                MessageBox.Show("LUT 前置条件未全部通过：\n请先点\"一键检查\"，确认 IMU/MAGIC/LUT/AUTO_EN/MODE/DUTY_MIN/OFFSET 7 项全绿。\n" +
+                                "若 LUT 表未写：调 Modbus Poll 或本工具 WriteLut 写 0x0160~0x016C 13 格 + 0x016D=0xA5C3。",
+                                "前置条件未满足", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            try
+            {
+                _mb.WriteFanMode(2, 1);
+                OnDebugLog("Fan: 切查表 (0x0140=2, 0x0141=1)");
+            }
+            catch (Exception ex) { OnDebugLog($"Fan Lut error: {ex.Message}"); }
+        }
+
+        private void BtnFanEStop_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mb == null) return;
+            try
+            {
+                _mb.FanEStop();
+                OnDebugLog("Fan: 已紧急停止 (4 路 duty=0, 切回手动)");
+                // 立刻清 UI 显示
+                for (int i = 0; i < 4; i++) _fanStates[i] = default;
+                UpdateFanDisplay(_fanStates, _fanPre);
+            }
+            catch (Exception ex) { OnDebugLog($"Fan EStop error: {ex.Message}"); }
+        }
+
+        /// <summary>
+        /// 4 个风机滑块共用 ValueChanged 处理：Tag=1~4 标识风机编号。
+        /// 仅手动模式（_fanPre.Params.Mode==0）下下发；自动模式禁用滑块避免冲突。
+        /// 一次写 4 路占空比（WriteFanDuties 一条 FC10），降低串口压力。
+        /// </summary>
         private void SlFanDuty_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
-            // InitializeComponent 期间 Slider.Value 由 0 变为 50 会提前触发本回调，
-            // 此时 TxtFanDuty 尚未创建，需要做空保护。
-            if (TxtFanDuty == null) return;
+            if (sender is not System.Windows.Controls.Slider sl) return;
+            if (sl.Tag is not string tag || !int.TryParse(tag, out int fanIdx)) return;
+            // 找对应文本控件（避免 InitializeComponent 期间 NRE）
+            var txt = fanIdx switch
+            {
+                1 => TxtFan1Duty, 2 => TxtFan2Duty, 3 => TxtFan3Duty, 4 => TxtFan4Duty, _ => null
+            };
+            if (txt == null) return;
             int v = (int)Math.Round(e.NewValue, MidpointRounding.AwayFromZero);
             if (v < 0) v = 0; if (v > 100) v = 100;
-            TxtFanDuty.Text = $"{v}%";
+            txt.Text = $"{v}%";
+
+            if (_mb == null || !_connected) return;
+            // 自动模式（Mode!=0）下不下发，输出被 fan_auto_update 覆盖
+            if (_fanPre.Params.Mode != 0) return;
+
+            // 收集 4 路当前值（含本次变更），一次写
+            ushort d1 = (ushort)ClampDuty(SlFan1Duty?.Value ?? 0);
+            ushort d2 = (ushort)ClampDuty(SlFan2Duty?.Value ?? 0);
+            ushort d3 = (ushort)ClampDuty(SlFan3Duty?.Value ?? 0);
+            ushort d4 = (ushort)ClampDuty(SlFan4Duty?.Value ?? 0);
+            try { _mb.WriteFanDuties(d1, d2, d3, d4); }
+            catch (Exception ex) { OnDebugLog($"Fan duty write error: {ex.Message}"); }
         }
 
-        private void FanPreset_Click(object sender, RoutedEventArgs e)
+        private static int ClampDuty(double v)
         {
-            if (sender is System.Windows.Controls.Button btn && btn.Tag is string tag && int.TryParse(tag, out var pct))
+            int i = (int)Math.Round(v, MidpointRounding.AwayFromZero);
+            return i < 0 ? 0 : (i > 100 ? 100 : i);
+        }
+
+        /// <summary>
+        /// 刷新四路风机面板 + 共用区 + 模式按钮启停。
+        /// 由 CommLoop 每 200ms 在 UI 线程调度。
+        /// </summary>
+        private void UpdateFanDisplay(FanState[] states, FanPreCheck pre)
+        {
+            _fanStates = states;
+            _fanPre     = pre;
+
+            // 共用区
+            TxtTheta.Text     = $"{pre.TiltTheta:F1}°";
+            TxtAutoDuty.Text  = $"{pre.AutoDuty:F1}%";
+            string imuTxt = pre.ImuStatus switch
             {
-                SlFanDuty.Value = pct;
-                if (_fanConnected) SendFanDuty(pct);
-            }
-        }
-
-        private void SendFanDuty(int v)
-        {
-            if (v < 0) v = 0; if (v > 100) v = 100;
-            _fan?.SendDuty(v);
-        }
-
-        private void BtnFanSendRaw_Click(object sender, RoutedEventArgs e)
-        {
-            string c = EntFanCmd.Text.Trim();
-            if (c.Length == 0) return;
-            EntFanCmd.Text = "";
-            _fan?.SendRaw(c);
-        }
-
-        private void EntFanCmd_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
-        {
-            if (e.Key == System.Windows.Input.Key.Enter)
+                0 => "离线", 1 => "加热", 2 => "RUN", 3 => "错误", _ => pre.ImuStatus.ToString(),
+            };
+            TxtImuStatus.Text = imuTxt;
+            string modeTxt = pre.Params.Mode switch
             {
-                BtnFanSendRaw_Click(sender, new RoutedEventArgs());
-            }
+                0 => "手动", 1 => "线性", 2 => "查表", _ => pre.Params.Mode.ToString(),
+            };
+            TxtFanMode.Text = modeTxt;
+
+            // 自动模式下禁用 4 个滑块，避免与 fan_auto_update 冲突
+            bool sliderEnabled = (pre.Params.Mode == 0);
+            SlFan1Duty.IsEnabled = sliderEnabled;
+            SlFan2Duty.IsEnabled = sliderEnabled;
+            SlFan3Duty.IsEnabled = sliderEnabled;
+            SlFan4Duty.IsEnabled = sliderEnabled;
+
+            // 4 路面板
+            UpdateFanRow(1, states[0]);
+            UpdateFanRow(2, states[1]);
+            UpdateFanRow(3, states[2]);
+            UpdateFanRow(4, states[3]);
+
+            // 顺带刷红绿灯（CommLoop 每次都重评估，前置条件变化时即时反映）
+            EvalPreCheck(pre);
         }
 
-        // ===== 风机日志与回复解析 =====
-
-        private int _fanLogLines;
-        private void OnFanLog(string msg)
+        private void UpdateFanRow(int idx, FanState s)
         {
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                var line = $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n";
-                TxtFanLog.AppendText(line);
-                _fanLogLines++;
-                if (_fanLogLines > 200)
-                {
-                    var text = TxtFanLog.Text;
-                    int keep = text.LastIndexOf('\n', text.Length / 2);
-                    if (keep > 0) TxtFanLog.Text = text.Substring(keep + 1);
-                    _fanLogLines = TxtFanLog.Text.Count(c => c == '\n');
-                }
-                TxtFanLog.ScrollToEnd();
-            }));
-        }
+            var led   = idx switch { 1 => LedFan1Run, 2 => LedFan2Run, 3 => LedFan3Run, 4 => LedFan4Run, _ => null };
+            var pb    = idx switch { 1 => PbFan1DutyFb, 2 => PbFan2DutyFb, 3 => PbFan3DutyFb, 4 => PbFan4DutyFb, _ => null };
+            var tDuty = idx switch { 1 => TxtFan1DutyFb, 2 => TxtFan2DutyFb, 3 => TxtFan3DutyFb, 4 => TxtFan4DutyFb, _ => null };
+            var tPul  = idx switch { 1 => TxtFan1Pulse, 2 => TxtFan2Pulse, 3 => TxtFan3Pulse, 4 => TxtFan4Pulse, _ => null };
+            var tRpm  = idx switch { 1 => TxtFan1Rpm, 2 => TxtFan2Rpm, 3 => TxtFan3Rpm, 4 => TxtFan4Rpm, _ => null };
+            if (led == null || pb == null || tDuty == null || tPul == null || tRpm == null) return;
 
-        private void OnFanReply(string line)
-        {
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                // STATE=IDLE DUTY=0 TARGET=0 FREQ=.. RPM=.. CNT=.. PPR=..
-                var m = System.Text.RegularExpressions.Regex.Match(
-                    line, @"^STATE=(\S+)\s+DUTY=(\d+)\s+TARGET=(\d+)(?:\s+FREQ=(\d+)\s+RPM=(\d+)\s+CNT=(\d+))?");
-                if (m.Success)
-                {
-                    string state = m.Groups[1].Value;
-                    int duty = int.Parse(m.Groups[2].Value);
-                    int tgt  = int.Parse(m.Groups[3].Value);
-                    TxtFanState.Text = $"状态: {state}";
-                    PbFanDuty.Value = duty;
-                    TxtFanDutyState.Text = $"{duty}% / {tgt}%";
-                    var color = state switch
-                    {
-                        "IDLE"     => Brushes.Gray,
-                        "RUN"      => Brushes.SeaGreen,
-                        "STOPPING" => Brushes.DarkOrange,
-                        _          => Brushes.Gray
-                    };
-                    TxtFanState.Foreground = color;
-
-                    // 白线 FG 测速（固件支持时才有这几个字段）
-                    if (m.Groups[4].Success)
-                    {
-                        TxtPulseFreq.Text = $"频率 {m.Groups[4].Value} Hz";
-                        TxtPulseRpm.Text  = $"转速 {m.Groups[5].Value} RPM";
-                        TxtPulseCnt.Text  = $"脉冲 {m.Groups[6].Value} 个";
-                        bool hasSignal = int.Parse(m.Groups[4].Value) > 0;
-                        Brush sigColor = hasSignal ? Brushes.SeaGreen : Brushes.Gray;
-                        TxtPulseFreq.Foreground = sigColor;
-                        TxtPulseRpm.Foreground  = sigColor;
-                        TxtPulseCnt.Foreground  = sigColor;
-                    }
-                    return;
-                }
-                // Sxx 设置确认：OK S80 TARGET=80 / OK S0 -> STOP
-                // 让 TARGET= 可选，使 S0 停止回复也能触发状态刷新
-                var m2 = System.Text.RegularExpressions.Regex.Match(line, @"^OK S(\d+)(?:\s+TARGET=(\d+))?");
-                if (m2.Success)
-                {
-                    ThreadPool.QueueUserWorkItem(_ =>
-                    {
-                        Thread.Sleep(150);
-                        try { _fan?.SendStatus(); } catch { }
-                    });
-                }
-            }));
-        }
-
-        private void ResetFanUi()
-        {
-            TxtFanState.Text = "状态: --";
-            TxtFanState.Foreground = Brushes.Gray;
-            PbFanDuty.Value = 0;
-            TxtFanDutyState.Text = "--% / --%";
-            if (TxtPulseFreq != null)
-            {
-                TxtPulseFreq.Text = "频率 -- Hz";
-                TxtPulseRpm.Text  = "转速 -- RPM";
-                TxtPulseCnt.Text  = "脉冲 -- 个";
-                TxtPulseFreq.Foreground = Brushes.Gray;
-                TxtPulseRpm.Foreground  = Brushes.Gray;
-                TxtPulseCnt.Foreground  = Brushes.Gray;
-            }
+            led.Background = s.Run != 0 ? System.Windows.Media.Brushes.LimeGreen
+                                        : System.Windows.Media.Brushes.Gray;
+            pb.Value = Math.Clamp(s.DutyFb, 0, 100);
+            tDuty.Text = $"{s.DutyFb:F1}%";
+            tPul.Text = $"{s.Pulse:F0}";
+            tRpm.Text = $"{s.Rpm:F0} RPM";
         }
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
             StopCommThread();
             _mb?.Dispose();
-            try
-            {
-                if (_fan != null)
-                {
-                    _fan.ReplyReceived -= OnFanReply;
-                    _fan.DebugLog -= OnFanLog;
-                    _fan.Dispose();
-                }
-            } catch { }
             base.OnClosing(e);
         }
     }

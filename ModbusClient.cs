@@ -25,6 +25,25 @@ namespace GamepadSpeedController
         // 详见 接口文档.md §6.6「IMU 姿态输出区」。
         private const ushort RegImu = 0x0150;
 
+        // ========== 风机子系统寄存器（接口文档.md §6） ==========
+        // 4 路手动占空比（自动模式下只保存不驱动）
+        private const ushort RegFanDutyBase   = 0x0100; // 0x0100~0x0103 (4 只)
+        // 4 路状态起：每路 10 只，间隔 10 (0x0110 / 0x011A / 0x0124 / 0x012E)
+        private const ushort RegFanStatusBase = 0x0110; // 共 40 只 → 0x0110~0x0137
+        // 风机自动模式参数区（0x0140~0x014F，16 只）
+        private const ushort RegFanMode       = 0x0140; // 0=手动 1=线性 2=查表
+        private const ushort RegFanAutoEn     = 0x0141; // 自动总开关
+        private const ushort RegDutyMin       = 0x0143; // 必须 > 0，否则 θ=0 时掉壁
+        private const ushort RegPitchOffset   = 0x0148; // 俯仰零位偏置（int16 整数度）
+        private const ushort RegRollOffset    = 0x0149; // 横滚零位偏置
+        // LUT 查表区（0x0160~0x016D，14 只 = 13 格 + 魔数）
+        private const ushort RegLutBase       = 0x0160; // 0x0160~0x016C (13 格) + 0x016D (MAGIC)
+        private const ushort RegLutMagic      = 0x016D; // 0xA5C3
+        // 实时倾角 θ 与自动输出占空比（在 IMU 区里，但风机界面要用）
+        private const ushort RegTiltTheta     = 0x016E; // float32, 0~180°
+        private const ushort RegAutoDuty      = 0x015C; // float32, 自动模式当前输出占空比
+        private const ushort RegImuStatus     = 0x015E; // uint16, 0=离线 1=加热 2=运行 3=错误
+
         private readonly SerialPort _port;
         private readonly object _lock = new();
 
@@ -135,6 +154,168 @@ namespace GamepadSpeedController
                 Qy = ReadFloat(regs[40], regs[41]),        // 0x0178
                 Qz = ReadFloat(regs[42], regs[43]),        // 0x017A
             };
+        }
+
+        // ========== 风机子系统：4 路 + LUT 模式前置条件 ==========
+
+        /// <summary>
+        /// 读 4 路风机状态（0x0110~0x0137 共 40 只，每路 10 只）。
+        /// 字段口径与接口文档.md §6.2 一致：
+        ///   +0 FAN_RUN(uint16) +2/+3 FAN_PULSE(float32 ABCD) +4/+5 FAN_RPM(float32)
+        ///   +6/+7 FAN_DUTY_FB(float32, 取实际 CCR 值, 非 0x0100 寄存器值)
+        /// 风机 3/4 共用 PWM7，二者反馈恒同值，正常现象。
+        /// </summary>
+        public FanState[] ReadFanStates()
+        {
+            ushort[] regs = ReadHoldingRegisters(RegFanStatusBase, 40);
+            FanState[] result = new FanState[4];
+            for (int i = 0; i < 4; i++)
+            {
+                int off = i * 10;
+                result[i] = new FanState
+                {
+                    Run    = regs[off + 0],
+                    Pulse  = ReadFloat(regs[off + 2], regs[off + 3]),
+                    Rpm    = ReadFloat(regs[off + 4], regs[off + 5]),
+                    DutyFb = ReadFloat(regs[off + 6], regs[off + 7]),
+                };
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 读风机自动模式参数区（0x0140~0x014F，16 只）。
+        /// 仅取与 LUT 前置条件相关的字段；其余参数（如 KP_PITCH/MAG_*)固件预留或只读，不解析。
+        /// </summary>
+        public FanParams ReadFanParams()
+        {
+            ushort[] regs = ReadHoldingRegisters(RegFanMode, 16);
+            return new FanParams
+            {
+                Mode        = regs[0],   // 0x0140
+                AutoEn      = regs[1],   // 0x0141
+                DutyFlat    = regs[2],   // 0x0142
+                DutyMin     = regs[3],   // 0x0143
+                DutyMax     = regs[4],   // 0x0144
+                SlopeGain   = regs[5],   // 0x0145
+                PitchOffset = (short)regs[8],  // 0x0148
+                RollOffset  = (short)regs[9],  // 0x0149
+                HeaterPwm   = regs[15],        // 0x014F
+            };
+        }
+
+        /// <summary>
+        /// 读 LUT 13 格占空比表 + 魔数（0x0160~0x016D，14 只，一条 FC03）。
+        /// </summary>
+        public (ushort[] lut, ushort magic) ReadLut()
+        {
+            ushort[] regs = ReadHoldingRegisters(RegLutBase, 14);
+            ushort[] lut = new ushort[13];
+            Array.Copy(regs, 0, lut, 0, 13);
+            return (lut, regs[13]);
+        }
+
+        /// <summary>
+        /// 一次性读取 LUT 模式前置条件所需全部寄存器。
+        /// 一次 FC03 读 0x0140 起 48 只（0x0140~0x016F），覆盖：
+        ///   0x0140~0x014F (16) 风机参数
+        ///   0x0150~0x015F (16) IMU 姿态+状态（其中 0x015C AUTO_DUTY / 0x015E IMU_STATUS 要用）
+        ///   0x0160~0x016D (14) LUT + 魔数
+        ///   0x016E~0x016F ( 2) 实时倾角 θ
+        /// CommLoop 每 200ms 调用一次，单帧 ≈ 100 字节响应，~10ms 传输。
+        /// </summary>
+        public FanPreCheck ReadFanPreCheck()
+        {
+            ushort[] regs = ReadHoldingRegisters(RegFanMode, 48);
+            var lut = new ushort[13];
+            Array.Copy(regs, 32, lut, 0, 13); // 0x0160~0x016C → 偏移 32..44
+
+            return new FanPreCheck
+            {
+                Params = new FanParams
+                {
+                    Mode        = regs[0],             // 0x0140
+                    AutoEn      = regs[1],             // 0x0141
+                    DutyFlat    = regs[2],             // 0x0142
+                    DutyMin     = regs[3],             // 0x0143
+                    DutyMax     = regs[4],             // 0x0144
+                    SlopeGain   = regs[5],             // 0x0145
+                    PitchOffset = (short)regs[8],     // 0x0148
+                    RollOffset  = (short)regs[9],      // 0x0149
+                    HeaterPwm   = regs[15],            // 0x014F
+                },
+                // 0x015C~0x015D AUTO_DUTY float32 → 偏移 0x1C=28
+                AutoDuty  = ReadFloat(regs[28], regs[29]),
+                // 0x015E IMU_STATUS uint16 → 偏移 0x1E=30
+                ImuStatus = regs[30],
+                // 0x016D LUT_MAGIC → 偏移 0x2D=45
+                LutMagic  = regs[45],
+                Lut       = lut,
+                // 0x016E~0x016F TILT_THETA float32 → 偏移 0x2E=46
+                TiltTheta = ReadFloat(regs[46], regs[47]),
+            };
+        }
+
+        /// <summary>
+        /// 一次写 4 路手动占空比（0x0100~0x0103，一条 FC10）。
+        /// 自动模式下只保存不驱动，输出被 fan_auto_update 每 5ms 覆盖。
+        /// </summary>
+        public void WriteFanDuties(ushort d1, ushort d2, ushort d3, ushort d4)
+        {
+            // 钳位 0~100
+            d1 = (ushort)Math.Clamp(d1, (ushort)0, (ushort)100);
+            d2 = (ushort)Math.Clamp(d2, (ushort)0, (ushort)100);
+            d3 = (ushort)Math.Clamp(d3, (ushort)0, (ushort)100);
+            d4 = (ushort)Math.Clamp(d4, (ushort)0, (ushort)100);
+            WriteMultipleRegisters(RegFanDutyBase, new ushort[] { d1, d2, d3, d4 });
+        }
+
+        /// <summary>
+        /// 切换风机模式（0x0140 FAN_MODE + 0x0141 FAN_AUTO_EN，一条 FC10）。
+        /// ⚠️ 接口文档.md §6.5/§6.7 操作铁律：必须先写参数（LUT/OFFSET/DUTY_MIN）→ 最后切自动。
+        /// 调用方应先用 ReadFanPreCheck() 确认前置条件满足再切。
+        /// </summary>
+        public void WriteFanMode(ushort mode, ushort autoEn)
+        {
+            WriteMultipleRegisters(RegFanMode, new ushort[] { mode, autoEn });
+        }
+
+        /// <summary>
+        /// 一次写 LUT 13 格 + 魔数（0x0160~0x016D，一条 FC10）。
+        /// ⚠️ 写 LUT 区会立刻触发一次 fan_auto_update 重算。
+        /// </summary>
+        public void WriteLut(ushort[] lut13, ushort magic = 0xA5C3)
+        {
+            if (lut13 == null || lut13.Length != 13)
+                throw new ArgumentException("LUT 必须是 13 个值", nameof(lut13));
+            ushort[] regs = new ushort[14];
+            Array.Copy(lut13, 0, regs, 0, 13);
+            regs[13] = magic;
+            WriteMultipleRegisters(RegLutBase, regs);
+        }
+
+        /// <summary>
+        /// 写俯仰/横滚零位偏置（0x0148/0x0149，int16 整数度，一条 FC10）。
+        /// ⚠️ OFFSET 标错会让整张 LUT 整体偏移。
+        /// </summary>
+        public void WriteOffsets(short pitchOffset, short rollOffset)
+        {
+            WriteMultipleRegisters(RegPitchOffset, new ushort[]
+            {
+                (ushort)pitchOffset,
+                (ushort)rollOffset,
+            });
+        }
+
+        /// <summary>
+        /// 风机紧急停止：写 0x0100~0x0103 = 0、再切回手动 0x0140=0/0x0141=0。
+        /// 任何一步失败都不抛异常，仅记日志，确保紧急路径可靠。
+        /// </summary>
+        public void FanEStop()
+        {
+            try { WriteFanDuties(0, 0, 0, 0); } catch (Exception ex) { Log($"FanEStop duty: {ex.Message}"); }
+            Thread.Sleep(20);
+            try { WriteFanMode(0, 0); } catch (Exception ex) { Log($"FanEStop mode: {ex.Message}"); }
         }
 
         // ========== 核心通信：对齐 Modbus Poll 的最简实现 ==========
@@ -405,5 +586,51 @@ namespace GamepadSpeedController
         public float Qx;        // 四元数 X 分量
         public float Qy;        // 四元数 Y 分量
         public float Qz;        // 四元数 Z 分量
+    }
+
+    /// <summary>
+    /// 单路风机状态（接口文档.md §6.2）。
+    /// 字段口径：+0 FAN_RUN(uint16) +2/+3 FAN_PULSE(float32 ABCD)
+    /// +4/+5 FAN_RPM(float32) +6/+7 FAN_DUTY_FB(float32, 取实际 CCR 值)
+    /// 注意：风机无温度通道，+8/+9 恒 0，不解析。
+    /// </summary>
+    public struct FanState
+    {
+        public ushort Run;      // 运行标志：占空比>0 为 1，否则 0
+        public float  Pulse;     // FG 脉冲累计计数（float32, 长时间运行精度会下降）
+        public float  Rpm;       // 实测转速 RPM（约 60 RPM 分辨率，PPR 硬编码为 2）
+        public float  DutyFb;    // 当前输出占空比 0~100（取实际 CCR 值，非 0x0100）
+    }
+
+    /// <summary>
+    /// 风机自动模式参数区（0x0140~0x014F）的子集。
+    /// 只取与 LUT 模式前置条件相关的字段，预留位（如 KP_*/MAG_*）不解析。
+    /// </summary>
+    public struct FanParams
+    {
+        public ushort Mode;         // 0x0140: 0=手动 1=线性 2=查表
+        public ushort AutoEn;       // 0x0141: 自动总开关，与 Mode 同时非 0 才接管输出
+        public ushort DutyFlat;     // 0x0142: 水平基准占空比（仅线性模式）
+        public ushort DutyMin;      // 0x0143: 输出下限，必须 > 0（两模式都生效）
+        public ushort DutyMax;      // 0x0144: 输出上限（两模式都生效）
+        public ushort SlopeGain;    // 0x0145: 坡度增益（仅线性模式）
+        public short  PitchOffset;  // 0x0148: 俯仰零位偏置（整数度）
+        public short  RollOffset;   // 0x0149: 横滚零位偏置（整数度）
+        public ushort HeaterPwm;   // 0x014F: 加热 PWM 诊断值 0~4500
+    }
+
+    /// <summary>
+    /// LUT 模式前置条件检查结果（一次 FC03 0x0140~0x016F 读出）。
+    /// UI 应据此刷 7 个红绿灯：IMU_STATUS==2 / LUT_MAGIC==0xA5C3 / LUT 13 格非全 0
+    /// / FAN_AUTO_EN==1 / FAN_MODE==2 / DUTY_MIN>0 / OFFSET 已校（水平台面时 roll/pitch≈0）。
+    /// </summary>
+    public struct FanPreCheck
+    {
+        public ushort   ImuStatus;  // 0x015E
+        public ushort   LutMagic;    // 0x016D
+        public ushort[] Lut;         // 0x0160~0x016C, 13 只
+        public FanParams Params;     // 0x0140~0x014F
+        public float    TiltTheta;   // 0x016E 实时倾角 0~180°
+        public float    AutoDuty;    // 0x015C 自动模式当前输出占空比（手动模式恒 0）
     }
 }

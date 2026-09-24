@@ -9,7 +9,7 @@ using SharpDX.XInput;
 
 namespace GamepadSpeedController
 {
-    public partial class MainWindow : Window
+    public partial class MainWindow : Window, IElrsHost
     {
         private ModbusClient? _mb;
         private bool _connected;
@@ -22,6 +22,9 @@ namespace GamepadSpeedController
 
         // 姿态3D可视化窗口（按需打开；关闭后置 null）
         private AttitudeWindow? _attitudeWindow;
+
+        // ELRS 手柄窗口（按需打开；关闭后置 null）
+        private ElrsWindow? _elrsWindow;
 
         // 速度命令源（UI 线程写入，通信线程读取）
         private float _cmdVx, _cmdVy, _cmdWz;
@@ -53,7 +56,7 @@ namespace GamepadSpeedController
             CbGear.ItemsSource = new[] { "慢速", "中速", "快速" };
             CbGear.SelectedIndex = 1;
 
-            // 风机 Modbus 走主串口 _mb，无需独立端口配置
+            // ELRS 端口下拉已移至 ElrsWindow，主窗口不再管理
 
             // 尝试检测手柄
             DetectGamepad();
@@ -106,6 +109,11 @@ namespace GamepadSpeedController
             }
             ChkHeartbeat.IsChecked = false;
         }
+
+        // ========== ELRS 接收机（CRSF）已迁移至 ElrsWindow ==========
+        // 启用/停用/链路自检/轮询循环/失联保护全部在 ElrsWindow.xaml.cs
+        // MainWindow 通过 IElrsHost 接口向 ElrsWindow 暴露：速度命令缓冲、急停、使能切换、档位同步。
+        // 见本文件末尾 IElrsHost 实现，以及 BtnElrs_Click 打开窗口。
 
         private void CbGear_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
         {
@@ -231,6 +239,8 @@ namespace GamepadSpeedController
                 ChkHeartbeat.IsChecked = false;
                 ChkPadEnable.IsChecked = false;
                 _padEnabled = false;
+                // 同步停用 ELRS（ELRS 已移至独立窗口；急停时中断其轮询，避免心跳被下一帧复活）
+                _elrsWindow?.DisableElrs();
                 _mb.EmergencyStop();
                 SetEnableState(false);
                 SetStatus("已紧急停止", false);
@@ -296,6 +306,59 @@ namespace GamepadSpeedController
             }
         }
 
+        // ========== ELRS 手柄窗口 ==========
+
+        private void BtnElrs_Click(object sender, RoutedEventArgs e)
+        {
+            if (_elrsWindow == null || !_elrsWindow.IsLoaded)
+            {
+                _elrsWindow = new ElrsWindow { Owner = this, Host = this };
+                _elrsWindow.Closed += (_, _) => _elrsWindow = null;
+                _elrsWindow.Show();
+            }
+            else
+            {
+                _elrsWindow.Activate();
+            }
+        }
+
+        // ========== IElrsHost 实现（供 ElrsWindow 调用） ==========
+
+        public bool IsModbusConnected => _connected;
+        public string? MainPortName => CbPort.Text;
+
+        public void SetVelocity(float vx, float vy, float wz)
+        {
+            lock (_cmdLock) { _cmdVx = vx; _cmdVy = vy; _cmdWz = wz; _cmdHeartbeat = true; }
+        }
+
+        public void OnElrsEnabled()
+        {
+            // 与 XInput 互斥：启用 ELRS 时关闭 XInput 手柄
+            if (ChkPadEnable.IsChecked == true) ChkPadEnable.IsChecked = false;
+            // 启用 ELRS 时自动开启心跳（C 板速度命令 500ms 无更新归零）
+            lock (_cmdLock) { _cmdHeartbeat = true; }
+            ChkHeartbeat.IsChecked = true;
+        }
+
+        public void OnElrsDisabled()
+        {
+            // ELRS 停用时清零速度命令 + 关心跳
+            lock (_cmdLock) { _cmdVx = 0; _cmdVy = 0; _cmdWz = 0; _cmdHeartbeat = false; }
+            ChkHeartbeat.IsChecked = false;
+        }
+
+        public void TriggerEStop() => DoEStop();
+        public void TriggerEnableToggle() => DoEnableToggle();
+
+        public void SetGear(SpeedGear gear)
+        {
+            _gear = gear;
+            CbGear.SelectedIndex = (int)gear;
+        }
+
+        public void Log(string msg) => OnDebugLog(msg);
+
         // ========== 单一通信线程 ==========
 
         private void StartCommThread()
@@ -325,6 +388,7 @@ namespace GamepadSpeedController
                 {
                     PollGamepad();
                 }
+                // ⚠️ ELRS 已移到独立线程 CrsfPollLoop，不在 CommLoop 里 PollCrsf()
 
                 bool shouldSend = false;
                 float vx = 0, vy = 0, wz = 0;
@@ -479,6 +543,8 @@ namespace GamepadSpeedController
                 TxtPadWz.Text = wz.ToString("F2");
             }));
         }
+
+        // ELRS 轮询循环已移至 ElrsWindow.CrsfPollLoop（独立窗口 + 独立后台线程）
 
         // ========== UI 更新 ==========
 

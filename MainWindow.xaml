@@ -23,6 +23,9 @@
                 <TextBlock x:Name="TxtStatus" Text="未连接" Foreground="Gray" VerticalAlignment="Center" Margin="16,0,0,0"/>
                 <Button x:Name="BtnAttitude3D" Content="姿态3D" Width="72" Margin="16,0,0,0"
                         Click="BtnAttitude3D_Click" Background="LightSteelBlue"/>
+                <Button x:Name="BtnElrs" Content="ELRS 手柄" Width="84" Margin="8,0,0,0"
+                        Click="BtnElrs_Click" Background="LightSteelBlue"
+                        ToolTip="打开 ELRS 接收机（Pocket 遥控器）控制窗口"/>
             </StackPanel>
         </GroupBox>
 
@@ -140,8 +143,10 @@
                             <TextBlock x:Name="TxtPadName" Text="未检测" VerticalAlignment="Center" Margin="8,0,0,0" FontWeight="Bold"/>
                             <TextBlock Text="档位:" VerticalAlignment="Center" Margin="20,0,0,0"/>
                             <ComboBox x:Name="CbGear" Width="80" Margin="8,0,0,0" SelectionChanged="CbGear_SelectionChanged"/>
-                            <CheckBox x:Name="ChkPadEnable" Content="启用手柄" VerticalAlignment="Center" Margin="20,0,0,0"
+                            <CheckBox x:Name="ChkPadEnable" Content="启用 XInput" VerticalAlignment="Center" Margin="20,0,0,0"
                                       Checked="ChkPadEnable_Checked" Unchecked="ChkPadEnable_Unchecked"/>
+                            <TextBlock Text="(ELRS 已移至独立窗口，点顶部「ELRS 手柄」)" Foreground="Gray"
+                                       VerticalAlignment="Center" Margin="12,0,0,0" FontSize="11"/>
                         </StackPanel>
                     </GroupBox>
 

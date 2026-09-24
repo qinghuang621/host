@@ -326,6 +326,8 @@ namespace GamepadSpeedController
 
         public bool IsModbusConnected => _connected;
         public string? MainPortName => CbPort.Text;
+        public bool IsMotorsEnabled => _motorsEnabled;
+        public SpeedGear CurrentGear => _gear;
 
         public void SetVelocity(float vx, float vy, float wz)
         {
@@ -353,6 +355,14 @@ namespace GamepadSpeedController
 
         public void SetGear(SpeedGear gear)
         {
+            // ELRS CH5 自动同步：只更新，不标记覆盖
+            _gear = gear;
+            CbGear.SelectedIndex = (int)gear;
+        }
+
+        public void OverrideGear(SpeedGear gear)
+        {
+            // ElrsWindow 手动覆盖：更新 MainWindow 档位 + 禁止 CH5 自动覆盖
             _gear = gear;
             CbGear.SelectedIndex = (int)gear;
         }

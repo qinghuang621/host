@@ -44,7 +44,7 @@ namespace GamepadSpeedController
 
         // 暴露给外部的状态字段（volatile，多线程可见）
         public volatile float[] Channels = new float[16]; // 实际前 11 个有效，归一化到 -1..+1
-        public volatile int RssiDbm = -128;                // 上行 RSSI（dBm），0=未知
+        public volatile int RssiDbm = 0;                    // 上行 RSSI（dBm），0=未知（还没收到 Link Statistics 帧）
         public volatile int FrameLoss;                     // 累计丢帧计数
         public DateTime LastFrameAt = DateTime.MinValue;
 
@@ -66,7 +66,8 @@ namespace GamepadSpeedController
         {
             get
             {
-                if (LastFrameAt == DateTime.MinValue) return true;
+                // 从未收到过帧 → 不算失联（刚启动还没对上频 / 刚创建的 reader 还没 Poll 到帧）
+                if (LastFrameAt == DateTime.MinValue) return false;
                 return (DateTime.UtcNow - LastFrameAt).TotalMilliseconds > LinkTimeoutMs
                     || (RssiDbm != 0 && RssiDbm < RssiThreshold);
             }

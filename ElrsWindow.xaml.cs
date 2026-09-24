@@ -44,6 +44,35 @@ namespace GamepadSpeedController
             // 复用系统串口列表；端口下拉在窗口打开时刷新一次
             CbCrsfPort.ItemsSource = SerialPort.GetPortNames().OrderBy(p => p).ToList();
             if (CbCrsfPort.Items.Count > 0) CbCrsfPort.SelectedIndex = 0;
+
+            // 初始刷新电机状态显示
+            RefreshMotorState();
+        }
+
+        // ==================== 电机控制（仅急停按钮；使能/档位由遥控器 CH5/CH6 自动控制） ====================
+
+        private void BtnEStop_Click(object sender, RoutedEventArgs e)
+        {
+            Host?.TriggerEStop();
+            RefreshMotorState();
+        }
+
+        /// <summary>
+        /// 从 MainWindow 拉取电机使能状态 + 当前档位，刷新 UI 显示。
+        /// CH6 上升沿触发 / CH5 档位变化 / 急停 后调用。
+        /// </summary>
+        private void RefreshMotorState()
+        {
+            if (Host == null) return;
+            bool enabled = Host.IsMotorsEnabled;
+            TxtMotorState.Text = enabled ? "已使能" : "失能";
+            TxtMotorState.Foreground = enabled
+                ? System.Windows.Media.Brushes.Green
+                : System.Windows.Media.Brushes.Gray;
+
+            string[] gearNames = { "慢速", "中速", "快速" };
+            int gearIdx = (int)Host.CurrentGear;
+            TxtGear.Text = gearIdx >= 0 && gearIdx < gearNames.Length ? gearNames[gearIdx] : "--";
         }
 
         // ==================== 启用 / 停用 ====================
@@ -205,7 +234,7 @@ namespace GamepadSpeedController
             r.BadFrames = 0;
             r.LastBadFrameLen = 0;
             r.LastBadFrameType = 0;
-            r.RssiDbm = -128;
+            r.RssiDbm = 0;
             r.FrameLoss = 0;
             r.LastFrameAt = DateTime.MinValue;
 
@@ -300,75 +329,95 @@ namespace GamepadSpeedController
         {
             while (!token.IsCancellationRequested && _crsf != null)
             {
-                try { _crsf.Poll(); }
-                catch (Exception ex) { Log($"ELRS 读错误: {ex.Message}"); }
-
-                // ---- 失联保护 ----
-                if (_crsf.IsLinkLost)
+                try
                 {
-                    Log($"[失联] RSSI={_crsf.RssiDbm}dBm，1 秒无 CRSF 帧 → 触发急停并自动停用 ELRS（需手动重启）");
-                    // 急停 + 停用 ELRS 都切回 UI 线程执行（DoEStop 会再次调用 DisableElrs，幂等）
+                    _crsf.Poll();
+                }
+                catch (Exception ex) { Log($"ELRS 读错误: {ex.Message}"); continue; }
+
+                try
+                {
+                    // ---- 失联保护 ----
+                    if (_crsf.IsLinkLost)
+                    {
+                        Log($"[失联] RSSI={_crsf.RssiDbm}dBm，1 秒无 CRSF 帧 → 触发急停并停用 ELRS");
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            Host?.TriggerEStop();
+                            ChkCrsfEnable.IsChecked = false;
+                        }));
+                        return;
+                    }
+
+                    // 通道读取（Channels 是 volatile 数组，多线程可见）
+                    float ch1 = _crsf.Channels[0];  // 右X → wz
+                    float ch3 = _crsf.Channels[2];  // 左Y → vy
+                    float ch4 = -_crsf.Channels[3]; // 左X → vx（ELRS Pocket 方向相反，取反）
+                    float ch5 = _crsf.Channels[4];  // 三段开关 → 档位
+                    float ch6 = _crsf.Channels[5];  // 二段开关 → 使能
+
+                    // ---- CH5 三段开关 → 档位（自动，无需手动覆盖）----
+                    SpeedGear newGear = ch5 > 0.5f ? SpeedGear.Fast
+                                      : ch5 < -0.5f ? SpeedGear.Slow
+                                      : SpeedGear.Mid;
+
+                    // ---- CH6 二段开关 → 使能切换（上升沿触发）----
+                    bool swArm = ch6 > 0;
+                    bool needEnableToggle = swArm && !_crsfSwitchArm_prev;
+                    _crsfSwitchArm_prev = swArm;
+
+                    // ---- 摇杆映射到车体速度（vx=右+, vy=前+, wz=逆时针+）----
+                    var (vx, vy, wz) = MotionMapper.Map(leftY: ch3, leftX: ch4, rightX: ch1, newGear);
+
+                    // ---- 写入 MainWindow 共享速度命令缓冲区（线程安全，后台线程直调）----
+                    Host?.SetVelocity(vx, vy, wz);
+
+                    // ---- 所有 UI 操作 + MainWindow 状态更新，统一切回 UI 线程 ----
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        Host?.TriggerEStop();
-                        ChkCrsfEnable.IsChecked = false;
+                        // CH5 档位：必须在 UI 线程调 MainWindow.SetGear（它操作 CbGear.SelectedIndex）
+                        Host?.SetGear(newGear);
+                        string[] gearNames = { "慢速", "中速", "快速" };
+                        TxtGear.Text = gearNames[(int)newGear];
+                        TxtGearSource.Text = "(CH5 自动)";
+
+                        // CH6 使能切换：MainWindow.DoEnableToggle 需要在 UI 线程
+                        if (needEnableToggle)
+                        {
+                            Host?.TriggerEnableToggle();
+                            RefreshMotorState();
+                        }
+
+                        // 摇杆 + 通道 + RSSI 显示
+                        PbLY.Value = ch3;
+                        PbLX.Value = ch4;
+                        PbRX.Value = ch1;
+                        TxtVy.Text = vy.ToString("F2");
+                        TxtVx.Text = vx.ToString("F2");
+                        TxtWz.Text = wz.ToString("F2");
+
+                        TxtCh1.Text = ch1.ToString("F3");
+                        TxtCh2.Text = _crsf.Channels[1].ToString("F3");
+                        TxtCh3.Text = ch3.ToString("F3");
+                        TxtCh4.Text = _crsf.Channels[3].ToString("F3"); // 原始 CRSF 值（未取反）
+                        TxtCh5.Text = ch5.ToString("F3");
+                        TxtCh6.Text = ch6.ToString("F3");
+                        TxtCh7.Text = _crsf.Channels[6].ToString("F3");
+                        TxtChRest.Text = string.Join(" ",
+                            Enumerable.Range(7, 4).Select(i => _crsf.Channels[i].ToString("F2")));
+
+                        int rssi = _crsf.RssiDbm;
+                        TxtCrsfRssi.Text = rssi == 0 ? "-- dBm" : $"{rssi} dBm";
+                        TxtCrsfRssi.Foreground = rssi == 0 || rssi < CrsfReader.RssiThreshold
+                            ? System.Windows.Media.Brushes.OrangeRed
+                            : rssi < -80 ? System.Windows.Media.Brushes.Goldenrod
+                            : System.Windows.Media.Brushes.Green;
                     }));
-                    return;
                 }
-
-                // 通道读取（Channels 是 volatile 数组，多线程可见）
-                float ch1 = _crsf.Channels[0];  // 右X → wz_raw
-                float ch3 = _crsf.Channels[2];  // 左Y → vy_raw
-                float ch4 = _crsf.Channels[3];  // 左X → vx_raw
-                float ch5 = _crsf.Channels[4];  // 三段开关 → 档位
-                float ch6 = _crsf.Channels[5];  // 二段开关 → 使能
-
-                // 三段开关 → 档位（取最新值，无需边沿）
-                SpeedGear newGear = ch5 > 0.5f ? SpeedGear.Fast
-                                  : ch5 < -0.5f ? SpeedGear.Slow
-                                  : SpeedGear.Mid;
-                // SetGear 会写 CbGear.SelectedIndex（UI），必须切回 UI 线程
-                Dispatcher.BeginInvoke(new Action(() => Host?.SetGear(newGear)));
-
-                // 二段开关 → 使能切换（上升沿触发）
-                bool swArm = ch6 > 0;
-                if (swArm && !_crsfSwitchArm_prev)
-                    Dispatcher.BeginInvoke(new Action(() => Host?.TriggerEnableToggle()));
-                _crsfSwitchArm_prev = swArm;
-
-                // 摇杆映射到车体速度（vx=右+, vy=前+, wz=逆时针+）
-                var (vx, vy, wz) = MotionMapper.Map(leftY: ch3, leftX: ch4, rightX: ch1, newGear);
-
-                // 写入 MainWindow 的共享速度命令缓冲区（含心跳）
-                Host?.SetVelocity(vx, vy, wz);
-
-                // 更新本窗口 UI
-                Dispatcher.BeginInvoke(new Action(() =>
+                catch (Exception ex)
                 {
-                    PbLY.Value = ch3;
-                    PbLX.Value = ch4;
-                    PbRX.Value = ch1;
-                    TxtVy.Text = vy.ToString("F2");
-                    TxtVx.Text = vx.ToString("F2");
-                    TxtWz.Text = wz.ToString("F2");
-
-                    TxtCh1.Text = ch1.ToString("F3");
-                    TxtCh2.Text = _crsf.Channels[1].ToString("F3");
-                    TxtCh3.Text = ch3.ToString("F3");
-                    TxtCh4.Text = ch4.ToString("F3");
-                    TxtCh5.Text = ch5.ToString("F3");
-                    TxtCh6.Text = ch6.ToString("F3");
-                    TxtCh7.Text = _crsf.Channels[6].ToString("F3");
-                    TxtChRest.Text = string.Join(" ",
-                        Enumerable.Range(7, 4).Select(i => _crsf.Channels[i].ToString("F2")));
-
-                    int rssi = _crsf.RssiDbm;
-                    TxtCrsfRssi.Text = rssi == 0 ? "-- dBm" : $"{rssi} dBm";
-                    TxtCrsfRssi.Foreground = rssi == 0 || rssi < CrsfReader.RssiThreshold
-                        ? System.Windows.Media.Brushes.OrangeRed
-                        : rssi < -80 ? System.Windows.Media.Brushes.Goldenrod
-                        : System.Windows.Media.Brushes.Green;
-                }));
+                    Log($"CrsfPollLoop 异常（已忽略）: {ex.Message}");
+                }
 
                 Thread.Sleep(5);
             }
@@ -421,6 +470,12 @@ namespace GamepadSpeedController
         /// <summary>主串口 COM 号（用于 ELRS 端口冲突防呆）。</summary>
         string? MainPortName { get; }
 
+        /// <summary>电机当前是否已使能（用于 ElrsWindow 状态显示）。</summary>
+        bool IsMotorsEnabled { get; }
+
+        /// <summary>当前档位（用于 ElrsWindow 档位显示 + 覆盖 CH5）。</summary>
+        SpeedGear CurrentGear { get; }
+
         /// <summary>写入共享速度命令缓冲区（加锁 + 置心跳），由 CommLoop 下发。</summary>
         void SetVelocity(float vx, float vy, float wz);
 
@@ -433,11 +488,14 @@ namespace GamepadSpeedController
         /// <summary>失联时触发 MainWindow 急停（清速度 + 急停电机）。</summary>
         void TriggerEStop();
 
-        /// <summary>CH6 上升沿触发使能切换。</summary>
+        /// <summary>CH6 上升沿触发使能切换 / ElrsWindow 使能按钮点击。</summary>
         void TriggerEnableToggle();
 
         /// <summary>CH5 三段开关同步档位（慢/中/快）。</summary>
         void SetGear(SpeedGear gear);
+
+        /// <summary>ElrsWindow 档位手动选择（覆盖 CH5 自动更新）。</summary>
+        void OverrideGear(SpeedGear gear);
 
         /// <summary>回灌一条日志到 MainWindow 调试日志区。</summary>
         void Log(string msg);

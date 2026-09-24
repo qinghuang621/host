@@ -20,10 +20,56 @@ namespace GamepadSpeedController
     {
         private bool _sceneBuilt;
 
+        /// <summary>
+        /// 由 MainWindow 在创建本窗口时注入的 Modbus 客户端引用，
+        /// 用于九轴/六轴切换按钮直接写 0x014A。
+        /// 注入前为 null，按钮点击会被忽略（不会抛异常）。
+        /// </summary>
+        public ModbusClient? Modbus { get; set; }
+
         public AttitudeWindow()
         {
             InitializeComponent();
             Loaded += (_, _) => BuildScene();
+        }
+
+        // ============= 九轴切换按钮 =============
+        // 写 0x014A：1=允许九轴，0=强制六轴。
+        // 寄存器为断电保持，写入后无需重复写。
+        private void BtnMagOn_Click(object sender, RoutedEventArgs e)
+        {
+            if (Modbus == null) return;
+            try
+            {
+                Modbus.WriteMagEnable(1);
+                BtnMagOn.Background  = new SolidColorBrush(Color.FromRgb(0x6A, 0x1B, 0x9A));
+                BtnMagOn.Foreground  = Brushes.White;
+                BtnMagOff.Background = Brushes.LightGray;
+                BtnMagOff.Foreground = Brushes.Black;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"开启九轴失败：{ex.Message}",
+                    "九轴切换", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private void BtnMagOff_Click(object sender, RoutedEventArgs e)
+        {
+            if (Modbus == null) return;
+            try
+            {
+                Modbus.WriteMagEnable(0);
+                BtnMagOff.Background  = new SolidColorBrush(Color.FromRgb(0x9E, 0x9E, 0x9E));
+                BtnMagOff.Foreground  = Brushes.White;
+                BtnMagOn.Background = Brushes.LightGray;
+                BtnMagOn.Foreground = Brushes.Black;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"强制六轴失败：{ex.Message}",
+                    "六轴切换", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
 
         // ============= 场景构建 =============
@@ -148,6 +194,40 @@ namespace GamepadSpeedController
             TxtQuat.Text = norm2 > 0.001
                 ? $"(w={imu.Qw:F3}, x={imu.Qx:F3}, y={imu.Qy:F3}, z={imu.Qz:F3})"
                 : "( -- )";
+
+            // ========== IST8310 磁力计（接口文档.md §6.9）==========
+            // 初始化错误码：0=成功，0x40=WHO_AM_I 失败，1~4=第 N 个配置寄存器回读校验失败
+            bool magOk = imu.MagInitErr == 0;
+            TxtMagInit.Text = imu.MagInitErr switch
+            {
+                0x00 => "OK",
+                0x40 => "0x40 无传感器",
+                _    => $"0x{imu.MagInitErr:X2} 配置失败",
+            };
+            TxtMagInit.Foreground = magOk ? Brushes.Green : Brushes.OrangeRed;
+
+            // 融合状态徽标：九轴（紫）/ 六轴（灰）/ 离线（红）
+            if (!magOk)
+            {
+                TxtMagState.Text = "MAG 离线";
+                MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+            }
+            else if (imu.MagActive == 1)
+            {
+                TxtMagState.Text = "九轴融合";
+                MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0x6A, 0x1B, 0x9A));
+            }
+            else
+            {
+                // 硬件正常但没在九轴：enable=1 时是启动/降级瞬时态，enable=0 是被手动关闭
+                TxtMagState.Text = imu.MagEnable == 1 ? "六轴(降级?)" : "六轴(已关闭)";
+                MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0x9E, 0x9E, 0x9E));
+            }
+
+            TxtMagX.Text    = $"{imu.MagX:F1}";
+            TxtMagY.Text    = $"{imu.MagY:F1}";
+            TxtMagZ.Text    = $"{imu.MagZ:F1}";
+            TxtMagNorm.Text = $"{imu.MagNorm:F1}";
         }
 
         // ============= 几何辅助 =============

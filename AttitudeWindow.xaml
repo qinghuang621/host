@@ -74,6 +74,41 @@
                     <TextBlock x:Name="TxtQuat" Text="( -- )" Foreground="#333333" Margin="6,0,0,0"
                                FontSize="13" FontWeight="SemiBold"/>
                 </StackPanel>
+                <!-- IST8310 磁力计：融合状态 + 初始化错误码 + 原始三轴 μT + 模值 -->
+                <Border BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Margin="0,6,0,0" Padding="0,5,0,0">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                    <TextBlock Text="MAG" Foreground="#6A1B9A" FontWeight="Bold" VerticalAlignment="Center"/>
+                    <Border x:Name="MagStateBadge" Background="#BDBDBD" CornerRadius="3"
+                            Margin="8,0,8,0" Padding="8,1">
+                        <TextBlock x:Name="TxtMagState" Text="--" Foreground="White"
+                                   FontSize="13" FontWeight="Bold"/>
+                    </Border>
+                    <!-- 九轴切换按钮：写 0x014A=1 开启 / =0 强制六轴 -->
+                    <Button x:Name="BtnMagOn"  Content="九轴" Width="46" Height="22"
+                            Click="BtnMagOn_Click"  Margin="0,0,4,0" FontSize="11" Padding="0,1"
+                            ToolTip="写 0x014A=1，允许九轴融合（IST8310 在线时激活）"/>
+                    <Button x:Name="BtnMagOff" Content="六轴" Width="46" Height="22"
+                            Click="BtnMagOff_Click" Margin="0,0,12,0" FontSize="11" Padding="0,1"
+                            ToolTip="写 0x014A=0，强制六轴（yaw 会漂）"/>
+                    <TextBlock Text="INIT" Foreground="#777777" FontWeight="Bold" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtMagInit" Text="--" Foreground="#333333" Margin="6,0,14,0"
+                               FontSize="13" MinWidth="64"/>
+                    <TextBlock Text="X" Foreground="#D32F2F" FontWeight="Bold" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtMagX" Text="--" Foreground="#222222" Margin="4,0,12,0"
+                               FontSize="13" MinWidth="64"/>
+                    <TextBlock Text="Y" Foreground="#2E7D32" FontWeight="Bold" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtMagY" Text="--" Foreground="#222222" Margin="4,0,12,0"
+                               FontSize="13" MinWidth="64"/>
+                    <TextBlock Text="Z" Foreground="#1565C0" FontWeight="Bold" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtMagZ" Text="--" Foreground="#222222" Margin="4,0,12,0"
+                               FontSize="13" MinWidth="64"/>
+                    <TextBlock Text="|B|" Foreground="#777777" FontWeight="Bold" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtMagNorm" Text="--" Foreground="#333333" Margin="6,0,0,0"
+                               FontSize="13" FontWeight="SemiBold" MinWidth="64"/>
+                    <TextBlock Text="μT（未校准，转动车体模值应恒定）" Foreground="#888888"
+                               FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                </StackPanel>
+                </Border>
             </StackPanel>
         </Border>
     </Grid>

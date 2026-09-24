@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
 using System.Text;
@@ -24,6 +25,15 @@ namespace GamepadSpeedController
         // IMU 姿态输出区起始地址（0x0150 = 336）。共 16 只：roll/pitch/yaw/gyro_xyz/auto_duty/status/temp。
         // 详见 接口文档.md §6.6「IMU 姿态输出区」。
         private const ushort RegImu = 0x0150;
+
+        // ========== IST8310 磁力计 / 九轴融合（接口文档.md §6.4 / §6.9，2026-09-23） ==========
+        // 0x014A 磁力计使能（读写，断电保持）：0=强制六轴，1=允许九轴
+        // 0x014B 融合状态（只读）：0=六轴运行，1=九轴运行
+        private const ushort RegMagEnable = 0x014A;
+        // 0x017C 初始化错误码（0=成功，0x40=WHO_AM_I 失败，1~4=配置寄存器校验失败）
+        private const ushort RegMagInitErr = 0x017C;
+        // 0x017E 起 6 只：MAG_X/Y/Z（float32 μT，高字在前，未校准）
+        private const ushort RegMagX       = 0x017E;
 
         // ========== 风机子系统寄存器（接口文档.md §6） ==========
         // 4 路手动占空比（自动模式下只保存不驱动）
@@ -121,39 +131,56 @@ namespace GamepadSpeedController
         }
 
         /// <summary>
-        /// 读 IMU 姿态块 + 实时 θ + 姿态四元数。
-        /// 一次读 0x0150 起 44 只（0x0150~0x017B）：
+        /// 读 IMU 姿态块 + 实时 θ + 姿态四元数 + IST8310 磁力计诊断。
+        /// 一条 FC03 读 0x014A 起 58 只（0x014A~0x0183），各段布局：
+        ///   0x014A~0x014F ( 6 只起) 磁力计使能/状态（前 3 只）+ 风机参数尾部（跳过）
         ///   0x0150~0x015F (16 只)  IMU 姿态 + 温度
         ///   0x0160~0x016D (14 只)  LUT 表 + 魔数（只读无害，直接跳过）
         ///   0x016E~0x016F ( 2 只)  实时总倾角 θ（float32）
         ///   0x0170~0x0173 ( 4 只)  空白（断电保持区尾部，恒 0）
         ///   0x0174~0x017B ( 8 只)  姿态四元数 (w, x, y, z)
+        ///   0x017C         ( 1 只)  磁力计初始化错误码
+        ///   0x017D         ( 1 只)  对齐填充，恒 0
+        ///   0x017E~0x0183 ( 6 只)  磁力计 MAG_X/Y/Z（3×float32 μT，未校准）
         /// 字段口径与固件 components/algorithm/ins_task.h::ins_snapshot_t 及
-        /// 接口文档.md §6.6、§6.7、§6.8 完全一致。
+        /// 接口文档.md §6.4、§6.6、§6.7、§6.8、§6.9 完全一致。
         /// </summary>
         public ImuData ReadImu()
         {
-            ushort[] regs = ReadHoldingRegisters(RegImu, 44);
-            return new ImuData
+            ushort[] regs = ReadHoldingRegisters(RegMagEnable, 58);
+            var imu = new ImuData
             {
-                Roll     = ReadFloat(regs[0],  regs[1]),   // 0x0150
-                Pitch    = ReadFloat(regs[2],  regs[3]),   // 0x0152
-                Yaw      = ReadFloat(regs[4],  regs[5]),   // 0x0154
-                GyroX    = ReadFloat(regs[6],  regs[7]),   // 0x0156
-                GyroY    = ReadFloat(regs[8],  regs[9]),   // 0x0158
-                GyroZ    = ReadFloat(regs[10], regs[11]),  // 0x015A
-                AutoDuty = ReadFloat(regs[12], regs[13]), // 0x015C
-                Status   = regs[14],                       // 0x015E
-                TempX10  = (short)regs[15],                // 0x015F
-                // 倾斜角：车体 z 轴与竖直向上的夹角，0~180°
-                // 0x016E 起 2 只 → 偏移 0x1E (30)
-                TiltTheta = ReadFloat(regs[30], regs[31]), // 0x016E
-                // 四元数：0x0174 起 8 只 → 偏移 0x24 (36)，顺序 (w, x, y, z)
-                Qw = ReadFloat(regs[36], regs[37]),        // 0x0174
-                Qx = ReadFloat(regs[38], regs[39]),        // 0x0176
-                Qy = ReadFloat(regs[40], regs[41]),        // 0x0178
-                Qz = ReadFloat(regs[42], regs[43]),        // 0x017A
+                // ---- 磁力计使能/状态（0x014A/0x014B，相对偏移 0/1）----
+                MagEnable  = regs[0],                          // 0x014A
+                MagActive  = regs[1],                          // 0x014B
+                // ---- IMU 姿态块（0x0150 起，相对偏移 6）----
+                Roll     = ReadFloat(regs[6],  regs[7]),      // 0x0150
+                Pitch    = ReadFloat(regs[8],  regs[9]),      // 0x0152
+                Yaw      = ReadFloat(regs[10], regs[11]),     // 0x0154
+                GyroX    = ReadFloat(regs[12], regs[13]),     // 0x0156
+                GyroY    = ReadFloat(regs[14], regs[15]),     // 0x0158
+                GyroZ    = ReadFloat(regs[16], regs[17]),     // 0x015A
+                AutoDuty = ReadFloat(regs[18], regs[19]),     // 0x015C
+                Status   = regs[20],                          // 0x015E
+                TempX10  = (short)regs[21],                   // 0x015F
+                // 倾斜角：车体 z 轴与竖直向上的夹角，0~180°（0x016E → 偏移 36）
+                TiltTheta = ReadFloat(regs[36], regs[37]),
+                // 四元数：0x0174 起 8 只 → 偏移 42，顺序 (w, x, y, z)
+                Qw = ReadFloat(regs[42], regs[43]),
+                Qx = ReadFloat(regs[44], regs[45]),
+                Qy = ReadFloat(regs[46], regs[47]),
+                Qz = ReadFloat(regs[48], regs[49]),
+                // ---- IST8310 磁力计诊断（0x017C 起，相对偏移 50）----
+                MagInitErr = regs[50],                        // 0x017C
+                // regs[51] = 0x017D 对齐填充恒 0，跳过
+                MagX = ReadFloat(regs[52], regs[53]),         // 0x017E
+                MagY = ReadFloat(regs[54], regs[55]),         // 0x0180
+                MagZ = ReadFloat(regs[56], regs[57]),         // 0x0182
             };
+            imu.MagNorm = MathF.Sqrt(imu.MagX * imu.MagX
+                                   + imu.MagY * imu.MagY
+                                   + imu.MagZ * imu.MagZ);
+            return imu;
         }
 
         // ========== 风机子系统：4 路 + LUT 模式前置条件 ==========
@@ -281,6 +308,19 @@ namespace GamepadSpeedController
         }
 
         /// <summary>
+        /// 写磁力计使能寄存器 0x014A（接口文档.md §6.4）：
+        ///   enable=1 → 允许九轴融合（IST8310 在线时进入九轴路径，yaw 不累积漂移）
+        ///   enable=0 → 强制六轴融合（仅陀螺+加速度，yaw 由陀螺积分会漂）
+        /// 寄存器为断电保持：写入后断电重启仍生效。
+        /// ⚠️ 仅当 MagInitErr==0（IST8310 自检通过）时使能九轴才会真正激活九轴路径，
+        ///    否则即使写 1 也会自动降级到六轴（MagActive 恒 0）。
+        /// </summary>
+        public void WriteMagEnable(ushort enable)
+        {
+            WriteMultipleRegisters(RegMagEnable, new ushort[] { enable });
+        }
+
+        /// <summary>
         /// 一次写 LUT 13 格 + 魔数（0x0160~0x016D，一条 FC10）。
         /// ⚠️ 写 LUT 区会立刻触发一次 fan_auto_update 重算。
         /// </summary>
@@ -341,14 +381,23 @@ namespace GamepadSpeedController
                     throw new InvalidOperationException($"读响应错误: slave={resp[0]} func={resp[1]}");
                 }
 
+                // 长度校验：响应被截断时（总线冲突/电气干扰/从站中途停发）resp 会短于预期。
+                // 不做这一步直接按 count 解析会抛 IndexOutOfRange，掩盖真正原因。
+                if (resp.Length != expectedLen)
+                {
+                    Log($"  READ FAIL: short frame, got {resp.Length}/{expectedLen} bytes " +
+                        $"(addr={startAddr}, count={count}) — 响应被截断（多主冲突/线缆/从站复位）");
+                    throw new TimeoutException(
+                        $"响应截断: addr={startAddr} count={count}, 收到 {resp.Length}/{expectedLen} 字节");
+                }
+
                 // CRC 校验
                 ushort rxCrc = (ushort)(resp[resp.Length - 1] << 8 | resp[resp.Length - 2]);
                 ushort calcCrc = Crc16(resp, 0, resp.Length - 2);
                 if (rxCrc != calcCrc)
                 {
                     Log($"  READ FAIL: CRC mismatch (rx=0x{rxCrc:X4}, calc=0x{calcCrc:X4})");
-                    // CRC 错误时仍然尝试解析（数据可能是对的，CRC 算错了）
-                    // throw new InvalidOperationException("读CRC错误");
+                    throw new InvalidOperationException("读 CRC 错误（字节被破坏：多主冲突/电气干扰）");
                 }
 
                 ushort[] result = new ushort[count];
@@ -393,6 +442,10 @@ namespace GamepadSpeedController
                 if (resp == null)
                     throw new TimeoutException($"写超时: addr={startAddr} count={regs.Length}");
 
+                if (resp.Length != 8)
+                    throw new TimeoutException(
+                        $"写响应截断: addr={startAddr}, 收到 {resp.Length}/8 字节（多主冲突/线缆）");
+
                 if (resp[0] != SlaveId || resp[1] != 0x10)
                     throw new InvalidOperationException($"写响应错误: slave={resp[0]} func={resp[1]}");
 
@@ -405,7 +458,15 @@ namespace GamepadSpeedController
         }
 
         /// <summary>
-        /// RS485 半双工通信：发 → 等 → 收 → 清残留。
+        /// RS485 半双工通信：发 → 收 → 清残留。
+        ///
+        /// 2026-09-23 改动：发送后**立即**开始 ReadAvailable，不再 Thread.Sleep(30+ms)。
+        /// 原因：原 Thread.Sleep 会让所有数据堆在 USB 串口驱动 buffer 里再一次性读出，
+        ///   ReadAvailable 看到的 chunk 全是 t≈0ms，**无法分辨"固件中途停发"vs"传输完成但被踩坏"**。
+        /// 现在让 ReadAvailable 实时记录每个 chunk 的到达时刻和字节间隙：
+        ///   - 固件停发：到某字节后突然长 silence（lastByteAt 与 totalMs 之间有大缝）
+        ///   - 数据被踩坏：所有字节按正常节奏到达，但 hex dump 显示内容异常/CRC 错
+        /// ReadAvailable 内部 500ms 总超时已涵盖"等首字节+传输"全流程。
         /// </summary>
         private byte[] SendAndReceive(byte[] req, int expectedLen)
         {
@@ -415,16 +476,10 @@ namespace GamepadSpeedController
             // 2. 发送（不需要 Flush —— USB 串口驱动会自动发完）
             _port.Write(req, 0, req.Length);
 
-            // 3. 等 RS485 方向切换 + STM32 响应
-            //    小帧（≤8字节响应）：30ms 足够
-            //    大帧（85字节响应）：需要 30ms 发 + ~75ms 传输 + STM32 处理
-            int waitMs = Math.Max(30, expectedLen * 2 + 10);
-            Thread.Sleep(waitMs);
-
-            // 4. 读响应
+            // 3. 立即开始读响应（ReadAvailable 内部 500ms 总超时）
             byte[] rx = ReadAvailable(expectedLen);
 
-            // 5. 读完全部响应后，丢弃可能残留的回声/垃圾字节
+            // 4. 读完全部响应后，丢弃可能残留的回声/垃圾字节
             try { _port.DiscardInBuffer(); } catch { }
 
             if (rx == null)
@@ -438,39 +493,87 @@ namespace GamepadSpeedController
         /// <summary>
         /// 读取串口数据。只靠"读到足够字节"或"总超时"结束。
         /// 不再用"10ms没数据就截断"——这是大帧丢失的根因。
+        ///
+        /// 诊断日志（2026-09-23 新增）：
+        ///   - 逐 chunk 记录到达时刻 + 累计字节 + hex
+        ///   - 计算字节间最大间隔（maxGap），区分"固件中途停发"vs"数据被踩坏"
+        ///   - 失败时打印最后字节到达时间和后续静默时长
+        ///   - 完整 hex dump 用于人工核对帧内容
         /// </summary>
         private byte[] ReadAvailable(int expectedLen)
         {
             var ms = new MemoryStream();
-            int startTick = Environment.TickCount;
+            var sw = Stopwatch.StartNew();
+            long firstByteMs = -1;
+            long lastByteMs = 0;
+            long maxGapMs = 0;
+            int chunkCount = 0;
+            var chunksLog = new StringBuilder();
 
             while (ms.Length < expectedLen)
             {
-                try
-                {
-                    int available = _port.BytesToRead;
-                    if (available > 0)
-                    {
-                        byte[] buf = new byte[available];
-                        _port.Read(buf, 0, available);
-                        ms.Write(buf, 0, buf.Length);
-                    }
-                }
+                int available;
+                try { available = _port.BytesToRead; }
                 catch { break; }
+
+                if (available > 0)
+                {
+                    byte[] buf = new byte[available];
+                    int n = _port.Read(buf, 0, available);
+                    long nowMs = sw.ElapsedMilliseconds;
+
+                    if (firstByteMs < 0) firstByteMs = nowMs;
+                    if (lastByteMs > 0)
+                    {
+                        long gap = nowMs - lastByteMs;
+                        if (gap > maxGapMs) maxGapMs = gap;
+                    }
+                    ms.Write(buf, 0, n);
+                    lastByteMs = nowMs;
+                    chunkCount++;
+
+                    chunksLog.Append($"[chunk#{chunkCount} t={nowMs}ms off={ms.Length - n}..{ms.Length} len={n}] ");
+                    chunksLog.Append(BitConverter.ToString(buf, 0, n));
+                    chunksLog.Append('\n');
+                }
 
                 if (ms.Length >= expectedLen) break;
 
                 // 总超时 500ms
-                if (Environment.TickCount - startTick > 500) break;
+                if (sw.ElapsedMilliseconds > 500) break;
 
-                Thread.Sleep(2);
+                Thread.Sleep(1);
+            }
+            sw.Stop();
+
+            long totalMs = sw.ElapsedMilliseconds;
+            byte[] all = ms.ToArray();
+            bool isShort = all.Length < expectedLen;
+
+            // ---- 诊断输出 ----
+            Log($"--- ReadAvailable: expected={expectedLen} got={all.Length} " +
+                $"time={totalMs}ms chunks={chunkCount} firstByteAt={firstByteMs}ms " +
+                $"lastByteAt={lastByteMs}ms maxGap={maxGapMs}ms ---");
+
+            if (chunksLog.Length > 0)
+                Log(chunksLog.ToString());
+
+            Log("[Full hex] " + BitConverter.ToString(all));
+
+            if (isShort)
+            {
+                Log($"  TIMEOUT: got {all.Length}/{expectedLen} bytes, " +
+                    $"last byte at t={lastByteMs}ms, " +
+                    $"then {(totalMs - lastByteMs)}ms silence — " +
+                    $"(固件停发？还是 USB 缓冲未刷新？看 maxGap 和 silence 比例)");
+            }
+            else if (maxGapMs > 20)
+            {
+                // 收齐了但中间有大缝——可能是 USB 批量传输抖动，也可能固件中段停顿
+                Log($"  WARN: maxGap={maxGapMs}ms (>20ms) — 传输过程中有停顿，但最终收齐");
             }
 
-            // 日志：实际读到多少字节
-            if (ms.Length < expectedLen)
-                Log($"  ReadAvailable: got {ms.Length}/{expectedLen} bytes (TIMEOUT)");
-
-            return ms.Length > 0 ? ms.ToArray() : null;
+            return all.Length > 0 ? all : null;
         }
 
         // ========== 帧构造 ==========
@@ -566,15 +669,17 @@ namespace GamepadSpeedController
     }
 
     /// <summary>
-    /// IMU 姿态块 + 姿态四元数解析结果。
+    /// IMU 姿态块 + 姿态四元数 + IST8310 磁力计诊断解析结果。
     /// 字段口径与固件一致：roll/pitch/yaw 单位 deg，gyro 单位 rad/s，temp_x10 单位 ℃×10。
     /// 四元数 (Qw, Qx, Qy, Qz) 为 body→earth，已归一化；当 ‖q‖≈0 时应回退用欧拉角。
+    /// 磁力计字段（2026-09-23 新增，接口文档.md §6.9）：MagX/Y/Z 为未校准原始磁场 μT，
+    /// MagNorm 为本机算出的三轴模值（校准时观察其在各姿态下是否恒定）。
     /// </summary>
     public struct ImuData
     {
         public float Roll;      // deg, 右倾为正
         public float Pitch;     // deg, 抬头为正
-        public float Yaw;       // deg, 逆时针为正（六轴无磁力计，会持续漂移）
+        public float Yaw;       // deg, 逆时针为正（九轴不累积漂移；六轴会漂，见 MagActive）
         public float GyroX;     // rad/s
         public float GyroY;     // rad/s
         public float GyroZ;     // rad/s
@@ -586,6 +691,14 @@ namespace GamepadSpeedController
         public float Qx;        // 四元数 X 分量
         public float Qy;        // 四元数 Y 分量
         public float Qz;        // 四元数 Z 分量
+        // ---- IST8310 磁力计 / 九轴融合（§6.9）----
+        public ushort MagEnable;  // 0x014A: 0=强制六轴 1=允许九轴（读写、断电保持）
+        public ushort MagActive;  // 0x014B: 0=当前六轴运行 1=当前九轴运行
+        public ushort MagInitErr; // 0x017C: 0=成功 0x40=WHO_AM_I 失败 1~4=配置校验失败
+        public float MagX;        // μT, X 轴原始磁场（未做硬铁/软铁校准）
+        public float MagY;        // μT, Y 轴
+        public float MagZ;        // μT, Z 轴
+        public float MagNorm;     // μT, √(x²+y²+z²)，本机计算
     }
 
     /// <summary>

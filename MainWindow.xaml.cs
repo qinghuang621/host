@@ -286,7 +286,7 @@ namespace GamepadSpeedController
         {
             if (_attitudeWindow == null || !_attitudeWindow.IsLoaded)
             {
-                _attitudeWindow = new AttitudeWindow { Owner = this };
+                _attitudeWindow = new AttitudeWindow { Owner = this, Modbus = _mb };
                 _attitudeWindow.Closed += (_, _) => _attitudeWindow = null;
                 _attitudeWindow.Show();
             }
@@ -370,8 +370,9 @@ namespace GamepadSpeedController
                     }
                 }
 
-                // ---- 3. 姿态3D窗口若打开则每 tick 读 IMU 姿态 ----
-                // IMU 块 0x0150~0x015F，响应 37B ≈ 3.3ms 传输，与电机监控错峰即可
+                // ---- 3. 姿态3D窗口若打开则每 tick 读 IMU 姿态 + 磁力计诊断 ----
+                // 一条 FC03 读 0x014A~0x0183（58 只）：姿态/四元数/θ + MAG 状态/错误码/原始三轴，
+                // 响应 121B ≈ 10.5ms 传输（SendAndReceive 内含保守等待），与电机监控错峰即可
                 if (_attitudeWindow != null && _mb != null)
                 {
                     try

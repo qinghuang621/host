@@ -13,19 +13,20 @@ namespace GamepadSpeedController
     ///
     /// 串口参数：420000 baud, 8N1（CRSF 协议硬性要求）。
     ///
-    /// 帧格式：0xEE &lt;len&gt; &lt;type&gt; &lt;payload...&gt; &lt;crc&gt;
-    ///   len   = type(1) + payload + crc(1)，合法值 2..63
-    ///   crc   = 累加和（type 到 payload 末尾）取反
+    /// 帧格式：0xC8 &lt;len&gt; &lt;type&gt; &lt;payload...&gt; &lt;crc&gt;
+    ///   0xC8  = 飞控地址（接收机→PC 方向固定用它；0xEE 是 Crossfire 发射机地址）
+    ///   len   = type(1) + payload + crc(1)，不含地址和 len 本身，合法值 2..63 → 总长 = len + 2
+    ///   crc   = CRC-8/DVB-S2（poly=0xD5，初值 0），只算 type 到 payload 末尾
     ///   type=0x16  通道帧：11 通道 × 11 bit，22 字节 payload（每通道 172~1811，中点 992）
-    ///   type=0x08  链路统计帧：12 字节 payload（含 RSSI/丢包计数）
+    ///   type=0x14  链路统计帧：10 字节 payload（RSSI / LQ / SNR）
     ///
     /// ELRS 高速模式 500Hz = 每 2ms 一帧，状态机以字节流方式解析，不怕丢字节重对齐。
     /// </summary>
     public class CrsfReader : IDisposable
     {
-        private const byte SyncByte     = 0xC8;  // CRSF 帧头（不是 0xEE！那是老 Crossfire）
+        private const byte SyncByte     = 0xC8;  // CRSF 帧头 = 飞控地址（0xEE 是 Crossfire 发射机地址）
         private const byte TypeChannels = 0x16;
-        private const byte TypeLinkStat = 0x08;
+        private const byte TypeLinkStat = 0x14;  // 链路统计帧（0x08 是电池帧，勿混）
 
         // CRSF 通道值范围（11 bit），中点 992，向两端 ±819
         private const int ChMin = 172;
@@ -38,24 +39,24 @@ namespace GamepadSpeedController
         public const int RssiThreshold = -100;   // dBm，低于此值视为链路不可用
 
         private readonly SerialPort _port;
-        private readonly byte[] _frame = new byte[64]; // len ≤ 63 + sync，64 足够
+        private readonly byte[] _frame = new byte[66]; // 总长 = len + 2 ≤ 65（len 上限 63），留余量防越界
         private int _frameLen;
         private ParseState _state = ParseState.WaitSync;
 
         // 暴露给外部的状态字段（volatile，多线程可见）
         public volatile float[] Channels = new float[16]; // 实际前 11 个有效，归一化到 -1..+1
         public volatile int RssiDbm = 0;                    // 上行 RSSI（dBm），0=未知（还没收到 Link Statistics 帧）
-        public volatile int FrameLoss;                     // 累计丢帧计数
+        public volatile int LinkQuality;                    // 上行链路质量 LQ（%，0~100）
         public DateTime LastFrameAt = DateTime.MinValue;
 
         // 测试统计字段（BtnCrsfTest_Click 用，可重置归零）
         public long TotalBytes;       // 累计接收字节数
-        public long SyncBytes;        // 累计 0xEE 同步字节数
+        public long SyncBytes;        // 累计 0xC8 同步字节数
         public long ValidFrames;     // 累计通过 CRC 校验的帧数
         public long BadFrames;       // 累计 CRC 失败的帧数
         public int LastBadFrameLen;  // 最近一帧 CRC 失败时的 len 字段值
         public byte LastBadFrameType;// 最近一帧 CRC 失败时的 type 字段值
-        public byte[] LastBadFrame = new byte[64]; // 最近一帧完整数据（从 0xEE 开始）
+        public byte[] LastBadFrame = new byte[64]; // 最近一帧完整数据（从 0xC8 开始）
 
         // 原始字节环形缓冲区（用于 hex dump 诊断，最多保留 512 字节）
         private readonly byte[] _rawRing = new byte[512];
@@ -206,13 +207,17 @@ namespace GamepadSpeedController
             return crc;
         }
 
+        /// <summary>
+        /// len 参数是 payload 长度（= LEN 字段 - 2，已扣掉 type 和 crc）。
+        /// 通道帧 payload 22 字节，链路统计帧 payload 10 字节。
+        /// </summary>
         private void HandleFrame(byte type, byte[] buf, int off, int len)
         {
             LastFrameAt = DateTime.UtcNow;
 
             if (type == TypeChannels && len >= 22)
                 DecodeChannels(buf, off);
-            else if (type == TypeLinkStat && len >= 12)
+            else if (type == TypeLinkStat && len >= 10)
                 DecodeLinkStats(buf, off);
         }
 
@@ -240,13 +245,20 @@ namespace GamepadSpeedController
             }
         }
 
+        /// <summary>
+        /// CRSF Link Statistics（type=0x14，payload 10 字节）字段布局：
+        ///   [0] 上行 RSSI（dBm 取负后按 uint8 传，0=未知）  [1] 上行 RSSI2
+        ///   [2] 上行 LQ（%，0~100）                        [3] 上行 SNR（int8，dB）
+        ///   [4] 活动天线  [5] RF 模式  [6] 发射功率  [7] 下行 RSSI  [8] 下行 LQ  [9] 下行 SNR
+        /// 注意：CRSF 该帧里没有"丢帧计数"字段，丢包情况由 LQ 反映。
+        /// </summary>
         private void DecodeLinkStats(byte[] buf, int off)
         {
             // payload[0] = uplink RSSI（signed int8, dBm，0 表示未知）
             int r = (sbyte)buf[off + 0];
             if (r != 0) RssiDbm = r;
-            // payload[2..3] = 累计丢帧计数（uint16, little-endian）
-            FrameLoss = buf[off + 2] | (buf[off + 3] << 8);
+            // payload[2] = 上行链路质量
+            LinkQuality = buf[off + 2];
         }
 
         private static float Normalize(int raw)

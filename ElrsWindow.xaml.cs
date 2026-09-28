@@ -106,24 +106,9 @@ namespace GamepadSpeedController
                 return;
             }
 
-            // 关键防呆：不能跟主串口是同一个 COM 号
-            if (string.Equals(portName, Host.MainPortName, StringComparison.OrdinalIgnoreCase))
-            {
-                ChkCrsfEnable.IsChecked = false;
-                Log($"[端口冲突] ELRS 端口 {portName} 与主串口 {Host.MainPortName} 相同！" +
-                    $" 需要：COMx=USB-RS485→C板，COMy=USB-TTL 3.3V→ELRS，两个适配器不能共用。");
-                MessageBox.Show(this,
-                    $"ELRS 端口 {portName} 与主串口相同！\n\n" +
-                    $"主串口（RS485 → C 板）当前占用 {Host.MainPortName}，\n" +
-                    $"ELRS 接收机必须接在**另一个 USB 转串口适配器**上。\n\n" +
-                    $"物理上需要：\n" +
-                    $"  COMx = USB-RS485 → C 板\n" +
-                    $"  COMy = USB-TTL 3.3V → ELRS 接收机\n\n" +
-                    $"两个 COM 号不能相同，也不能共用一个适配器。",
-                    "端口冲突", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
+            // 说明：不再限制 ELRS 端口必须与主串口不同（可能只接一个适配器）。
+            // 若主串口实际已打开且占用同一 COM，Windows 串口独占机制会让 new CrsfReader 抛异常，
+            // 由下面的 catch 统一提示"端口被占用"。
             try
             {
                 _crsf = new CrsfReader(portName);
@@ -192,17 +177,6 @@ namespace GamepadSpeedController
                 return;
             }
 
-            if (Host != null && Host.IsModbusConnected
-                && string.Equals(portName, Host.MainPortName, StringComparison.OrdinalIgnoreCase))
-            {
-                Log($"[端口冲突] 所选 {portName} 与主串口 {Host.MainPortName} 相同，必须是两个不同适配器。");
-                MessageBox.Show(this,
-                    $"所选 ELRS 端口 {portName} 与主串口（RS485→C板，当前也用 {Host.MainPortName}）相同！\n\n" +
-                    "必须是**两个不同的 USB 转串口适配器**。",
-                    "端口冲突", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
             BtnCrsfTest.IsEnabled = false;
             BtnCrsfTest.Content = "测试中...";
 
@@ -235,7 +209,7 @@ namespace GamepadSpeedController
             r.LastBadFrameLen = 0;
             r.LastBadFrameType = 0;
             r.RssiDbm = 0;
-            r.FrameLoss = 0;
+            r.LinkQuality = 0;
             r.LastFrameAt = DateTime.MinValue;
 
             DateTime start = DateTime.UtcNow;
@@ -255,7 +229,7 @@ namespace GamepadSpeedController
             sb.AppendLine($"  有效帧:    {r.ValidFrames}（通过 CRC 校验）");
             sb.AppendLine($"  坏帧:      {r.BadFrames}（CRC 失败）");
             sb.AppendLine($"  RSSI:      {(r.RssiDbm == 0 ? "未知/0" : r.RssiDbm + " dBm")}");
-            sb.AppendLine($"  丢帧计数:  {r.FrameLoss}");
+            sb.AppendLine($"  上行LQ:    {(r.LinkQuality == 0 ? "未知/0" : r.LinkQuality + " %")}");
             sb.AppendLine("  通道值（-1..+1，中点 0）：");
             for (int i = 0; i < 11; i++)
                 sb.AppendLine($"    CH{i + 1,-2} = {r.Channels[i],8:F3}");
@@ -466,9 +440,6 @@ namespace GamepadSpeedController
     {
         /// <summary>主串口（RS485→C板）是否已连接。</summary>
         bool IsModbusConnected { get; }
-
-        /// <summary>主串口 COM 号（用于 ELRS 端口冲突防呆）。</summary>
-        string? MainPortName { get; }
 
         /// <summary>电机当前是否已使能（用于 ElrsWindow 状态显示）。</summary>
         bool IsMotorsEnabled { get; }

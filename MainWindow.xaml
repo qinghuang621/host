@@ -26,6 +26,9 @@
                 <Button x:Name="BtnElrs" Content="ELRS 手柄" Width="84" Margin="8,0,0,0"
                         Click="BtnElrs_Click" Background="LightSteelBlue"
                         ToolTip="打开 ELRS 接收机（Pocket 遥控器）控制窗口"/>
+                <Button x:Name="BtnGps" Content="GPS 定位" Width="84" Margin="8,0,0,0"
+                        Click="BtnGps_Click" Background="LightSteelBlue"
+                        ToolTip="打开 GPS（NEO-6M/M8N）定位数据窗口"/>
             </StackPanel>
         </GroupBox>
 

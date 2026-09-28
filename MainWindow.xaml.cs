@@ -26,6 +26,9 @@ namespace GamepadSpeedController
         // ELRS 手柄窗口（按需打开；关闭后置 null）
         private ElrsWindow? _elrsWindow;
 
+        // GPS 定位窗口（按需打开；关闭后置 null）
+        private GpsWindow? _gpsWindow;
+
         // 速度命令源（UI 线程写入，通信线程读取）
         private float _cmdVx, _cmdVy, _cmdWz;
         private bool _cmdSendOnce;
@@ -322,10 +325,26 @@ namespace GamepadSpeedController
             }
         }
 
+        // ========== GPS 定位窗口 ==========
+
+        private void BtnGps_Click(object sender, RoutedEventArgs e)
+        {
+            if (_gpsWindow == null || !_gpsWindow.IsLoaded)
+            {
+                // GPS 是只读传感器，不参与电机控制，独立窗口无需宿主接口注入
+                _gpsWindow = new GpsWindow { Owner = this };
+                _gpsWindow.Closed += (_, _) => _gpsWindow = null;
+                _gpsWindow.Show();
+            }
+            else
+            {
+                _gpsWindow.Activate();
+            }
+        }
+
         // ========== IElrsHost 实现（供 ElrsWindow 调用） ==========
 
         public bool IsModbusConnected => _connected;
-        public string? MainPortName => CbPort.Text;
         public bool IsMotorsEnabled => _motorsEnabled;
         public SpeedGear CurrentGear => _gear;
 

@@ -29,22 +29,28 @@
             </StackPanel>
         </GroupBox>
 
-        <!-- Row 1: ELRS 端口 + 启用 + 测试 + RSSI -->
-        <GroupBox Grid.Row="1" Header="ELRS 接收机（CRSF 协议，420000 8N1）" Margin="0,0,0,6">
-            <StackPanel Orientation="Horizontal" Margin="8">
+        <!-- Row 1: ELRS 端口 + 波特率 + 启用 + 测试/扫描 + RSSI -->
+        <GroupBox Grid.Row="1" Header="ELRS 接收机（CRSF 协议；波特率默认 420000，可改）" Margin="0,0,0,6">
+            <WrapPanel Orientation="Horizontal" Margin="8">
                 <TextBlock Text="端口:" VerticalAlignment="Center"/>
                 <ComboBox x:Name="CbCrsfPort" Width="100" Margin="8,0,0,0"/>
+                <TextBlock Text="波特率:" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                <ComboBox x:Name="CbCrsfBaud" Width="96" Margin="8,0,0,0" IsEditable="True"
+                          ToolTip="CRSF 标准是 420000。⚠️ CP2102/CP2103 芯片做不出 420000 会映射到 460800（快 9.71%），此时数据必然全错。"/>
                 <CheckBox x:Name="ChkCrsfEnable" Content="启用 ELRS" VerticalAlignment="Center" Margin="12,0,0,0"
                           Checked="ChkCrsfEnable_Checked" Unchecked="ChkCrsfEnable_Unchecked"/>
                 <Button x:Name="BtnCrsfTest" Content="测试链路" Width="80" Margin="12,0,0,0"
                         Click="BtnCrsfTest_Click"
-                        ToolTip="自检 3 秒：字节数 / 0xC8 帧头数 / 有效帧数 / 通道值"/>
+                        ToolTip="自检 3 秒：字节数 / 0xC8 帧头数 / 有效帧数 / 周期检测 / 字节直方图 / 原始 dump"/>
+                <Button x:Name="BtnCrsfScan" Content="扫描波特率" Width="90" Margin="8,0,0,0"
+                        Click="BtnCrsfScan_Click"
+                        ToolTip="依次用 420000/460800/921600/400000/230400/115200 各收 0.4 秒，报有效帧数。用于判断'适配器到底能不能做 420000'（需先取消勾选'启用 ELRS'）"/>
                 <TextBlock Text="RSSI:" VerticalAlignment="Center" Margin="16,0,0,0"/>
                 <TextBlock x:Name="TxtCrsfRssi" Text="-- dBm" VerticalAlignment="Center" Margin="4,0,0,0"
                            FontFamily="Consolas" FontWeight="Bold" MinWidth="64"/>
                 <TextBlock x:Name="TxtLinkState" Text="未启用" VerticalAlignment="Center" Margin="16,0,0,0"
                            FontWeight="Bold" Foreground="Gray"/>
-            </StackPanel>
+            </WrapPanel>
         </GroupBox>
 
         <!-- Row 2: 摇杆可视化 + vx/vy/wz -->

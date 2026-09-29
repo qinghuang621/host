@@ -76,11 +76,20 @@ namespace GamepadSpeedController
 
         private enum ParseState { WaitSync, ReadLen, ReadBody }
 
-        public CrsfReader(string portName)
+        public CrsfReader(string portName, int baud = 420000)
         {
-            // ELRS 接收机对外（飞控/PC）的 CRSF 波特率：默认 420000。
+            // ELRS 接收机对外（飞控/PC）的 CRSF 波特率：标准值 420000。
             // SBUS 模式才是 115200 —— 所以如果 ELRS 设置为 SBUS 输出，要改成 115200 + 解析 SBUS 帧。
-            _port = new SerialPort(portName, 420000, Parity.None, 8, StopBits.One)
+            //
+            // ⚠️ 重要坑（2026-09-29 实测定位）：
+            //   CP2102/CP2103 这类芯片只有一张"支持档位表"，**420000 不在表里**，
+            //   芯片/驱动会把请求映射到最近的支持档 = 460800（快 +9.71%）。
+            //   结果：字节率/帧长/周期看起来全对（端口仍按真实起始位沿重新对齐，仍是 26 字节/帧），
+            //   但字节内部 8 个采样点被压缩（bit4 被采两次、bit7 永远采不到）→ 每个字节的值都错、全篇无 0xC8。
+            //   所以：**不要用 BaudRate 属性判断波特率是否生效**（它只回显请求值），
+            //   要看数据自证 —— 自检里 0xC8/有效帧 ≈ 1495、dump 以 C8 18 16 开头才算对。
+            //   CP2104/CP2105/CP2102N/FT232/CH340 才能真做出 420000。
+            _port = new SerialPort(portName, baud, Parity.None, 8, StopBits.One)
             {
                 ReadBufferSize = 4096,
                 ReadTimeout = 500,
@@ -88,6 +97,9 @@ namespace GamepadSpeedController
             _port.Open();
             try { _port.DiscardInBuffer(); } catch { }
         }
+
+        /// <summary>本次打开的串口波特率（注意：只回显请求值，不代表芯片真的跑在这个速率上）。</summary>
+        public int BaudRate => _port.BaudRate;
 
         /// <summary>
         /// 在 CommLoop tick 里调用：把串口驱动 buffer 里所有可用字节喂给状态机。
@@ -131,6 +143,39 @@ namespace GamepadSpeedController
                 if ((i + 1) % 16 == 0) sb.AppendLine();
             }
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// 返回最近的原始接收字节（流顺序，最多 count 个），用于自检做"周期检测 / 字节直方图"。
+        /// 与 DumpRaw 用的是同一份环形缓冲，只是以 byte[] 形式返回方便计算。
+        /// </summary>
+        public byte[] RawSnapshot(int count = 512)
+        {
+            int avail = (int)Math.Min(TotalBytes, _rawRing.Length);
+            if (avail <= 0) return Array.Empty<byte>();
+            count = Math.Min(count, avail);
+            int start = avail < _rawRing.Length ? 0 : _rawWritePos; // 填满时写指针指向最老位置
+            var buf = new byte[count];
+            for (int i = 0; i < count; i++) buf[i] = _rawRing[(start + i) % _rawRing.Length];
+            return buf;
+        }
+
+        /// <summary>
+        /// 把自检统计字段全部清零（自检 / 波特率扫描前调用）。
+        /// 注意：环形缓冲 _rawRing 不在这里清（它只是滚动的历史窗口，NewFrame 会自然覆盖）。
+        /// </summary>
+        public void ResetStats()
+        {
+            TotalBytes = 0;
+            SyncBytes = 0;
+            ValidFrames = 0;
+            BadFrames = 0;
+            LastBadFrameLen = 0;
+            LastBadFrameType = 0;
+            RssiDbm = 0;
+            LinkQuality = 0;
+            LastFrameAt = DateTime.MinValue;
+            Array.Clear(LastBadFrame, 0, LastBadFrame.Length);
         }
 
         private void FeedByte(byte b)

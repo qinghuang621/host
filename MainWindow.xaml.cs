@@ -452,13 +452,19 @@ namespace GamepadSpeedController
                     }
                     catch (Exception ex)
                     {
-                        errCount++;
-                        OnDebugLog($"Monitor read error: {ex.Message}");
-                        if (errCount >= 3)
+                        // 磁力计使能（0x014A）写入后的"落盘期"内，所有 Modbus 请求都会超时
+                        //（2s 去抖 + 1~2s 扇区擦除，擦除时 CPU 取指 stall、中断不响应）。
+                        // 这是预期行为，不计错误、不刷状态栏，否则用户会以为"点一下就坏了"。
+                        if (_attitudeWindow?.MagCommitBusy != true)
                         {
-                            Dispatcher.BeginInvoke(new Action(() =>
-                                SetStatus("读取失败（通信正常）", false)));
-                            errCount = 0;
+                            errCount++;
+                            OnDebugLog($"Monitor read error: {ex.Message}");
+                            if (errCount >= 3)
+                            {
+                                Dispatcher.BeginInvoke(new Action(() =>
+                                    SetStatus("读取失败（通信正常）", false)));
+                                errCount = 0;
+                            }
                         }
                     }
                 }
@@ -476,7 +482,8 @@ namespace GamepadSpeedController
                     }
                     catch (Exception ex)
                     {
-                        OnDebugLog($"IMU read error: {ex.Message}");
+                        if (_attitudeWindow?.MagCommitBusy != true)   // 落盘期超时属预期
+                            OnDebugLog($"IMU read error: {ex.Message}");
                     }
                 }
 
@@ -495,7 +502,8 @@ namespace GamepadSpeedController
                     }
                     catch (Exception ex)
                     {
-                        OnDebugLog($"Fan read error: {ex.Message}");
+                        if (_attitudeWindow?.MagCommitBusy != true)   // 落盘期超时属预期
+                            OnDebugLog($"Fan read error: {ex.Message}");
                     }
                 }
 

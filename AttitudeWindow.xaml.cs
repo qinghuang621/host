@@ -34,42 +34,66 @@ namespace GamepadSpeedController
         }
 
         // ============= 九轴切换按钮 =============
-        // 写 0x014A：1=允许九轴，0=强制六轴。
-        // 寄存器为断电保持，写入后无需重复写。
-        private void BtnMagOn_Click(object sender, RoutedEventArgs e)
+        // 写 0x014A：1=允许九轴，0=强制六轴。寄存器为断电保持，写入后无需重复写。
+        //
+        // ⚠️ 2026-09-29 两处修正：
+        //  ① 按钮高亮不再在点击时手工染色，一律由 UpdateAngles() 从【设备回读】的
+        //     MagEnable 派生（见 PaintMagButtons）。原来只靠点击染色有两个毛病：
+        //     · 窗口初次打开时两个按钮颜色完全相同 → 无法判断当前是九轴还是六轴；
+        //     · 会与徽标矛盾 —— 例如 MagInitErr!=0 时点"九轴"根本不生效，
+        //       按钮变紫而徽标仍显示"六轴(降级?)"。
+        //  ② 0x014A 落在断电保持区，写入后 2s 去抖 + 1~2s 扇区擦除（擦除时 CPU
+        //     取指 stall、连中断都不响应），期间【所有】Modbus 请求都会超时。
+        //     这里登记一个"落盘期"，供 MainWindow 轮询静默这些预期超时。
+
+        /// <summary>落盘期长度：2s 去抖 + 1~2s 擦除 + 通信恢复余量。</summary>
+        private const int MagCommitMs = 4500;
+
+        private DateTime _magCommitUntil = DateTime.MinValue;
+
+        /// <summary>
+        /// true = 刚写过 0x014A，正处在"2s 去抖 + 1~2s 擦除"窗口内。
+        /// 期间 Modbus 超时属预期行为，调用方应静默处理而不是报故障。
+        /// </summary>
+        public bool MagCommitBusy => DateTime.UtcNow < _magCommitUntil;
+
+        private void BtnMagOn_Click(object sender, RoutedEventArgs e)  => ToggleMag(1, "开启九轴");
+        private void BtnMagOff_Click(object sender, RoutedEventArgs e) => ToggleMag(0, "强制六轴");
+
+        private void ToggleMag(ushort enable, string what)
         {
             if (Modbus == null) return;
             try
             {
-                Modbus.WriteMagEnable(1);
-                BtnMagOn.Background  = new SolidColorBrush(Color.FromRgb(0x6A, 0x1B, 0x9A));
-                BtnMagOn.Foreground  = Brushes.White;
-                BtnMagOff.Background = Brushes.LightGray;
-                BtnMagOff.Foreground = Brushes.Black;
+                Modbus.WriteMagEnable(enable);
+
+                // 进入落盘期：立刻给出可见反馈并禁用按钮防连点。
+                // 真实状态等 UpdateAngles() 回读到 MagEnable 后再显示（不在这里假定成功）。
+                _magCommitUntil = DateTime.UtcNow.AddMilliseconds(MagCommitMs);
+                BtnMagOn.IsEnabled  = false;
+                BtnMagOff.IsEnabled = false;
+                TxtMagState.Text = "写入中…";
+                MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0x8F, 0x00));
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, $"开启九轴失败：{ex.Message}",
+                MessageBox.Show(this, $"{what}失败：{ex.Message}",
                     "九轴切换", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
-        private void BtnMagOff_Click(object sender, RoutedEventArgs e)
+        /// <summary>
+        /// 按【设备回读】的使能值重绘两个切换按钮。
+        /// 调用点在 UpdateAngles() ⇒ 打开窗口后 100ms 内即与实际状态同步。
+        /// </summary>
+        private void PaintMagButtons(bool enable)
         {
-            if (Modbus == null) return;
-            try
-            {
-                Modbus.WriteMagEnable(0);
-                BtnMagOff.Background  = new SolidColorBrush(Color.FromRgb(0x9E, 0x9E, 0x9E));
-                BtnMagOff.Foreground  = Brushes.White;
-                BtnMagOn.Background = Brushes.LightGray;
-                BtnMagOn.Foreground = Brushes.Black;
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, $"强制六轴失败：{ex.Message}",
-                    "六轴切换", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
+            BtnMagOn.Background  = enable ? new SolidColorBrush(Color.FromRgb(0x6A, 0x1B, 0x9A))
+                                          : Brushes.LightGray;
+            BtnMagOn.Foreground  = enable ? Brushes.White : Brushes.Black;
+            BtnMagOff.Background = enable ? Brushes.LightGray
+                                          : new SolidColorBrush(Color.FromRgb(0x9E, 0x9E, 0x9E));
+            BtnMagOff.Foreground = enable ? Brushes.Black : Brushes.White;
         }
 
         // ============= 场景构建 =============
@@ -206,6 +230,11 @@ namespace GamepadSpeedController
             };
             TxtMagInit.Foreground = magOk ? Brushes.Green : Brushes.OrangeRed;
 
+            // 按钮高亮由【设备回读】的 MagEnable 派生 —— 打开窗口即同步，不依赖"点过没点过"。
+            // 落盘期内禁用按钮，防止连点写出第二次擦除。
+            PaintMagButtons(imu.MagEnable == 1);
+            BtnMagOn.IsEnabled = BtnMagOff.IsEnabled = !MagCommitBusy;
+
             // 融合状态徽标：九轴（紫）/ 六轴（灰）/ 离线（红）
             if (!magOk)
             {
@@ -214,20 +243,38 @@ namespace GamepadSpeedController
             }
             else if (imu.MagActive == 1)
             {
+                // MagActive 由固件给出；2026-09-29 起其判据含"读数健康"
+                //（连续读失败 ≥3 次会自动降级并报 0），所以这里 =1 就确实在跑九轴。
                 TxtMagState.Text = "九轴融合";
                 MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0x6A, 0x1B, 0x9A));
             }
             else
             {
-                // 硬件正常但没在九轴：enable=1 时是启动/降级瞬时态，enable=0 是被手动关闭
+                // 硬件正常但没在九轴，三种可能：
+                //   enable=0             → 被手动关闭
+                //   enable=1 且读数失败  → 固件自动降级（查 0x0188 MAG_OK 是否在增长）
+                //   enable=1 启动最初几帧 → 瞬时态
                 TxtMagState.Text = imu.MagEnable == 1 ? "六轴(降级?)" : "六轴(已关闭)";
                 MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0x9E, 0x9E, 0x9E));
             }
 
-            TxtMagX.Text    = $"{imu.MagX:F1}";
-            TxtMagY.Text    = $"{imu.MagY:F1}";
-            TxtMagZ.Text    = $"{imu.MagZ:F1}";
+            TxtMagX.Text = $"{imu.MagX:F1}";
+            TxtMagY.Text = $"{imu.MagY:F1}";
+            TxtMagZ.Text = $"{imu.MagZ:F1}";
+
+            // 模值合理性：地磁总场约 25~65 μT；未做硬铁校准时偏置会让它偏大，故上界放宽到 150。
+            // 作用：在"九轴在跑、但读数明显不对劲"时给出可见信号 —— 这类问题以前完全静默
+            //（垃圾/冻结值被喂进 Mahony，yaw 是错的却毫无提示）。
             TxtMagNorm.Text = $"{imu.MagNorm:F1}";
+            bool normSane = imu.MagNorm >= 15f && imu.MagNorm <= 150f;
+            TxtMagNorm.Foreground = (magOk && !normSane)
+                ? Brushes.OrangeRed
+                : new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33));
+            if (magOk && imu.MagActive == 1 && !normSane)
+            {
+                TxtMagState.Text = "九轴(模值异常)";
+                MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0xF5, 0x7C, 0x00));
+            }
         }
 
         // ============= 几何辅助 =============

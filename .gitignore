@@ -13,3 +13,9 @@ obj/
 *.log
 *.tmp
 Thumbs.db
+
+# ---- IDE / 本地草稿 ----
+.trae/
+
+# ---- WorkBuddy agent workspace（项目记忆，非 host 代码）----
+.workbuddy/

@@ -35,6 +35,39 @@ namespace GamepadSpeedController
         // 0x017E 起 6 只：MAG_X/Y/Z（float32 μT，高字在前，未校准）
         private const ushort RegMagX       = 0x017E;
 
+        // ========== 【临时诊断 2026-09-23】磁力计 I2C 链路健康度 0x0184~0x018C（只读） ==========
+        // 为什么要读这一段：0x014B MAG_STATUS 报 0（回退六轴）时有三种原因 ——
+        //   ① 被 0x014A 关掉  ② 硬件离线（0x017C≠0）  ③ **I2C 连续读失败自动降级**。
+        // 只看 0x014B 无法区分 ③，而 ③ 恰恰是 09-23/09-29 反复出现的那类故障
+        //（400kHz 下随机毛刺 → 外设卡 BUSY 且不自愈 → MAG_OK 冻结、喂冻结向量给 Mahony）。
+        // 本段就是它的判读窗口，判读表见固件 bsp_modbus.c 的 REG_MAG_RAW_X 上方注释。
+        //
+        // ⚠️🔴 固件侧同一段标着「【临时诊断】…定位完整段删除」。2026-09-30 长老决定：
+        //   **测试期间保留，host 先对齐；以后测试完一起删。**
+        //   ⇒ 将来固件删这一段时，host 要**同步删除**以下四处（缺一处即编译失败或脏读）：
+        //     1) 本组 9 个常量 + RegImuBlockLen
+        //     2) ReadImu() 里 "【临时诊断】" 那段解析，读长从 RegImuBlockLen 收回 58
+        //     3) ImuData 的 MagRawX/Y/Z、MagErrCnt/MagOkCnt、MagHal/MagI2cState/MagI2cEcode、MagRecover
+        //     4) AttitudeWindow.xaml 的 I2C 诊断块（GlitchLamp/TxtGlitch/…）+
+        //        AttitudeWindow.xaml.cs 的 UpdateMagDiag() 与其字段
+        private const ushort RegMagRawX    = 0x0184; // int16 原始计数（不乘 0.3）
+        private const ushort RegMagRawY    = 0x0185;
+        private const ushort RegMagRawZ    = 0x0186;
+        private const ushort RegMagErrCnt  = 0x0187; // uint16：I2C 读失败累计
+        private const ushort RegMagOkCnt   = 0x0188; // uint16：I2C 读成功累计（不涨 = 卡死）
+        private const ushort RegMagHal     = 0x0189; // 最后一次 HAL 返回码：0=OK 1=ERROR 2=BUSY 3=TIMEOUT
+        private const ushort RegMagI2cState = 0x018A;// hi2c3.State：0x20=READY 0x24=BUSY 0xA0=TIMEOUT 0xE0=ERROR
+        private const ushort RegMagI2cEcode = 0x018B;// hi2c3.ErrorCode：0x04=AF(NACK) 0x01=BERR 0x20=TIMEOUT
+        private const ushort RegMagRecover = 0x018C; // 【自愈】I2C3 复位次数 = **毛刺发生次数**
+
+        /// <summary>
+        /// ReadImu() 的单次 FC03 读长：0x014A~0x018C 共 <b>67</b> 只。
+        /// 58 = 0x014A~0x0183（正式区）；+9 = 0x0184~0x018C（临时诊断区，见上）。
+        /// 上限核对：固件对 FC03 的规则是 qty &gt; 125 → 异常码 0x03（bsp_modbus.c 已修），
+        /// 67 远低于该限；响应 5+2+134 = 141 B &lt; 固件 256 B 发送缓冲，安全。
+        /// </summary>
+        private const ushort RegImuBlockLen = 67;
+
         // ========== 风机子系统寄存器（接口文档.md §6） ==========
         // 4 路手动占空比（自动模式下只保存不驱动）
         private const ushort RegFanDutyBase   = 0x0100; // 0x0100~0x0103 (4 只)
@@ -132,7 +165,7 @@ namespace GamepadSpeedController
 
         /// <summary>
         /// 读 IMU 姿态块 + 实时 θ + 姿态四元数 + IST8310 磁力计诊断。
-        /// 一条 FC03 读 0x014A 起 58 只（0x014A~0x0183），各段布局：
+        /// 一条 FC03 读 0x014A 起 <see cref="RegImuBlockLen"/> 只（0x014A~0x018C），各段布局：
         ///   0x014A~0x014F ( 6 只起) 磁力计使能/状态（前 3 只）+ 风机参数尾部（跳过）
         ///   0x0150~0x015F (16 只)  IMU 姿态 + 温度
         ///   0x0160~0x016D (14 只)  LUT 表 + 魔数（只读无害，直接跳过）
@@ -142,12 +175,13 @@ namespace GamepadSpeedController
         ///   0x017C         ( 1 只)  磁力计初始化错误码
         ///   0x017D         ( 1 只)  对齐填充，恒 0
         ///   0x017E~0x0183 ( 6 只)  磁力计 MAG_X/Y/Z（3×float32 μT，未校准）
+        ///   0x0184~0x018C ( 9 只)  【临时诊断】I2C 链路健康度（见常量区删除清单）
         /// 字段口径与固件 components/algorithm/ins_task.h::ins_snapshot_t 及
         /// 接口文档.md §6.4、§6.6、§6.7、§6.8、§6.9 完全一致。
         /// </summary>
         public ImuData ReadImu()
         {
-            ushort[] regs = ReadHoldingRegisters(RegMagEnable, 58);
+            ushort[] regs = ReadHoldingRegisters(RegMagEnable, RegImuBlockLen);
             var imu = new ImuData
             {
                 // ---- 磁力计使能/状态（0x014A/0x014B，相对偏移 0/1）----
@@ -176,6 +210,17 @@ namespace GamepadSpeedController
                 MagX = ReadFloat(regs[52], regs[53]),         // 0x017E
                 MagY = ReadFloat(regs[54], regs[55]),         // 0x0180
                 MagZ = ReadFloat(regs[56], regs[57]),         // 0x0182
+                // ---- 【临时诊断】I2C 链路健康度（0x0184 起，相对偏移 58）----
+                // 0x0184~0x0186 夹在读窗口中间，无法跳过，一并解析（int16 需按有符号还原）
+                MagRawX     = (short)regs[58],                // 0x0184
+                MagRawY     = (short)regs[59],                // 0x0185
+                MagRawZ     = (short)regs[60],                // 0x0186
+                MagErrCnt   = regs[61],                       // 0x0187
+                MagOkCnt    = regs[62],                       // 0x0188
+                MagHal      = regs[63],                       // 0x0189
+                MagI2cState = regs[64],                       // 0x018A
+                MagI2cEcode = regs[65],                       // 0x018B
+                MagRecover  = regs[66],                       // 0x018C
             };
             imu.MagNorm = MathF.Sqrt(imu.MagX * imu.MagX
                                    + imu.MagY * imu.MagY
@@ -681,6 +726,8 @@ namespace GamepadSpeedController
     /// 四元数 (Qw, Qx, Qy, Qz) 为 body→earth，已归一化；当 ‖q‖≈0 时应回退用欧拉角。
     /// 磁力计字段（2026-09-23 新增，接口文档.md §6.9）：MagX/Y/Z 为未校准原始磁场 μT，
     /// MagNorm 为本机算出的三轴模值（校准时观察其在各姿态下是否恒定）。
+    /// 末尾 MagRawX…MagRecover 来自固件【临时诊断】区 0x0184~0x018C，该段在固件侧
+    /// 标记为"定位完删除"——届时这些字段要**同步删除**（清单见 ModbusClient 常量区）。
     /// </summary>
     public struct ImuData
     {
@@ -706,6 +753,24 @@ namespace GamepadSpeedController
         public float MagY;        // μT, Y 轴
         public float MagZ;        // μT, Z 轴
         public float MagNorm;     // μT, √(x²+y²+z²)，本机计算
+
+        // ---- 【临时诊断】I2C 链路健康度（0x0184~0x018C，固件侧同段"定位完删除"）----
+        // 判读要点（与固件 bsp_modbus.c 注释一致）：
+        //   MagOkCnt 不涨          → 卡死/读不到（**判定"降级"的唯一硬证据**）
+        //   MagErrCnt 涨 + HAL=BUSY→ 上一次传输没结束，状态机卡住
+        //   MagErrCnt 涨 + ECODE 0x04 → 从机 NACK(AF)，器件/上拉/时序
+        //   MagErrCnt 涨 + ECODE 0x01 → BERR，总线噪声（上拉太弱/线太长）
+        //   MagErrCnt 涨 + ECODE 0x20 → 超时（从机拉死总线）
+        //   MagRecover 涨          → 【自愈】生效过：毛刺确实发生，但被自动救回
+        public short  MagRawX;     // 0x0184: int16 原始计数（×0.3 即 MagX）
+        public short  MagRawY;     // 0x0185
+        public short  MagRawZ;     // 0x0186
+        public ushort MagErrCnt;   // 0x0187: I2C 读失败累计
+        public ushort MagOkCnt;    // 0x0188: I2C 读成功累计
+        public ushort MagHal;      // 0x0189: 0=OK 1=ERROR 2=BUSY 3=TIMEOUT
+        public ushort MagI2cState; // 0x018A: hi2c3.State
+        public ushort MagI2cEcode; // 0x018B: hi2c3.ErrorCode
+        public ushort MagRecover;  // 0x018C: 【自愈】I2C3 复位次数 = 毛刺发生次数
     }
 
     /// <summary>

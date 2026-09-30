@@ -57,6 +57,32 @@ namespace GamepadSpeedController
         /// </summary>
         public bool MagCommitBusy => DateTime.UtcNow < _magCommitUntil;
 
+        // ===== 【临时诊断 2026-09-23】磁力计 I2C 链路灯状态（固件 0x0184~0x018C）=====
+        // ⚠️ 与固件同名的"临时诊断区"配套：固件删除该段时，本组字段与 UpdateMagDiag()
+        //    一并删除（清单见 ModbusClient.cs 常量区注释）。
+
+        /// <summary>连续多少次刷新 MAG_OK 不变即判"卡死"。刷新约 100ms ⇒ 4 拍 ≈ 400ms。</summary>
+        private const int FrozenTicksToConfirm = 4;
+
+        /// <summary>毛刺闪烁窗长度(ms)。窗内按 160ms 节拍亮/暗交替，形成可见闪烁。</summary>
+        private const int GlitchFlashMs = 900;
+
+        private ushort _magPrevOkCnt;          // 上一拍 MAG_OK，用于判"是否还在涨"
+        private ushort _magPrevErrCnt;         // 上一拍 MAG_ERR，用于算失败增量
+        private ushort _magPrevRecover;        // 上一拍 MAG_RECOVER，用于算毛刺增量
+        private int    _magOkFrozenTicks;      // MAG_OK 连续未变化的拍数
+        private long   _magGlitchFlashUntil;   // 毛刺闪烁窗截止（TickCount64）
+        private bool   _magDiagPrimed;         // 首拍只取基线，不把历史累计误判成新毛刺
+        private short  _magPrevRawX;           // RAW 三个值的"变化哨兵"，只在变化时重建字符串
+        // 融合频率推算窗（≥600ms 才结算一次，避免抖动）：
+        //   固件 s_mag_read_div 数的是【循环次数】，满 10 次才读一次磁
+        //   ⇒ 融合频率 = 磁读速率 × 10。读速率 = (ΔOK + ΔERR) / Δt。
+        //   这是**免费**的实测仪表：不用改固件就能回答 ins_task 那边的
+        //   "融合次数是否少于实际毫秒数"（机制 A：100kHz 磁读阻塞 1.5ms > 1ms 节拍）。
+        private long   _magRateWinStartMs;
+        private uint   _magRateWinOk;
+        private uint   _magRateWinErr;
+
         private void BtnMagOn_Click(object sender, RoutedEventArgs e)  => ToggleMag(1, "开启九轴");
         private void BtnMagOff_Click(object sender, RoutedEventArgs e) => ToggleMag(0, "强制六轴");
 
@@ -95,6 +121,188 @@ namespace GamepadSpeedController
                                           : new SolidColorBrush(Color.FromRgb(0x9E, 0x9E, 0x9E));
             BtnMagOff.Foreground = enable ? Brushes.Black : Brushes.White;
         }
+
+        // ============= 【临时诊断】磁力计 I2C 链路健康灯 =============
+        // 数据源：固件 0x0184~0x018C（见 ModbusClient.cs 常量区）。
+        // ⚠️ 该段在固件里标着"定位完删除"。**将来删固件那一段时，本方法连同上方的
+        //    6 个 _magXxx 字段、XAML 里的 I2C 诊断块、以及 ImuData 的 9 个诊断字段一起删。**
+        //
+        // 灯色的物理含义（与固件 bsp_modbus.c 的判读表逐条对应）：
+        //   灰 N/A   —— MAG_INIT_ERR≠0，链路压根没建立，后面的计数没有意义
+        //   绿 正常  —— MAG_OK 在涨（I2C 真的读到了数据）
+        //   黄 毛刺  —— MAG_RECOVER 涨：毛刺**确实发生过**，但被固件自愈（复位 I2C3）救回。
+        //              这是 09-23 那批修复的验收信号：黄闪持续出现 ⇒ 100kHz 降速只是缓解，
+        //              需按当时的结论加 4.7kΩ 外部上拉；不再出现 ⇒ 降速已够。
+        //   红 卡死  —— MAG_OK 连续 4 拍（≈400ms）不涨：自愈也没救回来 / 读数彻底断了。
+        //              这是 09-23 实测复现过的"永久卡死"，也是"六轴(降级)"的真因。
+        //              2026-09-30 再细分两种病（靠 ERR 是否还在涨区分）：
+        //                · 卡死·重试  —— ERR 仍在涨：固件还在发 I2C，只是全失败
+        //                                ⇒ **自愈没生效**（固件版本旧 / 自愈分支有 bug）
+        //                · 卡死·停摆  —— ERR 也冻结：连尝试都没有
+        //                                ⇒ 读取循环整体停了（InsTask 卡住 / s_mag_present 掉 0）
+        private void UpdateMagDiag(ImuData imu, bool magOk)
+        {
+            // 首拍只登记基线：固件计数是**上电以来**的累计值，
+            // 若直接和历史比，会把开机前发生过的毛刺当成"刚发生"而误闪一次。
+            if (!_magDiagPrimed)
+            {
+                _magPrevOkCnt       = imu.MagOkCnt;
+                _magPrevErrCnt      = imu.MagErrCnt;
+                _magPrevRecover     = imu.MagRecover;
+                _magOkFrozenTicks   = 0;
+                _magDiagPrimed      = true;
+                _magRateWinStartMs  = Environment.TickCount64;
+                _magRateWinOk       = 0;
+                _magRateWinErr      = 0;
+            }
+
+            // ---- MAG_OK 是否还在涨（判"卡死"的唯一硬证据）----
+            if (imu.MagOkCnt != _magPrevOkCnt)
+            {
+                _magOkFrozenTicks = 0;
+            }
+            else if (_magOkFrozenTicks < 1000)   // 封顶，防长时间挂机后溢出语义不清
+            {
+                _magOkFrozenTicks++;
+            }
+
+            // ---- 增量：uint16 无符号相减，天然处理 65535→0 回绕 ----
+            ushort okDelta      = (ushort)(imu.MagOkCnt  - _magPrevOkCnt);
+            ushort errDelta     = (ushort)(imu.MagErrCnt - _magPrevErrCnt);
+            ushort recoverDelta = (ushort)(imu.MagRecover - _magPrevRecover);
+            long   now          = Environment.TickCount64;
+            if (recoverDelta > 0)
+            {
+                _magGlitchFlashUntil = now + GlitchFlashMs;
+            }
+
+            // ---- 融合频率推算（见字段区注释；只统计"读次数"，与成败无关）----
+            _magRateWinOk  += okDelta;
+            _magRateWinErr += errDelta;
+            long winMs = now - _magRateWinStartMs;
+            if (_magDiagPrimed && winMs >= 600)
+            {
+                if (!magOk)
+                {
+                    // 磁力计没在线（s_mag_present=0）⇒ 固件整个跳过读块，速率没有意义
+                    TxtMagFusion.Text       = "--";
+                    TxtMagFusion.Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
+                }
+                else
+                {
+                    double sec       = winMs / 1000.0;
+                    double readsSec  = (_magRateWinOk + _magRateWinErr) / sec;
+                    double fusionHz  = readsSec * 10.0;   // 每 10 次循环读一次磁
+                    TxtMagFusion.Text = $"≈{fusionHz:F0} Hz";
+                    // 额定 1000 Hz。明显偏低即说明节拍被挤掉（机制 A 的指纹），标橙。
+                    TxtMagFusion.Foreground = fusionHz < 900.0
+                        ? Brushes.OrangeRed
+                        : new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32));
+                }
+                _magRateWinStartMs = now;
+                _magRateWinOk      = 0;
+                _magRateWinErr     = 0;
+            }
+
+            bool frozen   = magOk && _magOkFrozenTicks >= FrozenTicksToConfirm;
+            bool flashing = magOk && !frozen && now < _magGlitchFlashUntil;
+
+            // ---- 灯 ----
+            Color lamp;
+            string glitchText;
+            if (!magOk)
+            {
+                lamp       = Color.FromRgb(0xBD, 0xBD, 0xBD);
+                glitchText = "N/A";
+            }
+            else if (frozen)
+            {
+                lamp       = Color.FromRgb(0xE5, 0x39, 0x35);
+                glitchText = errDelta > 0 ? "卡死·重试" : "卡死·停摆";
+            }
+            else if (flashing)
+            {
+                // 亮/暗交替模拟闪烁（不用 DispatcherTimer：本方法本就每 ~100ms 被调一次）
+                bool bright = (now / 160) % 2 == 0;
+                lamp       = bright ? Color.FromRgb(0xF5, 0x7C, 0x00) : Color.FromRgb(0xFF, 0xE0, 0xB2);
+                glitchText = "毛刺";
+            }
+            else
+            {
+                lamp       = Color.FromRgb(0x2E, 0x7D, 0x32);
+                glitchText = "正常";
+            }
+            GlitchLamp.Background  = new SolidColorBrush(lamp);
+            TxtGlitch.Text         = glitchText;
+            TxtGlitch.Foreground   = (frozen || flashing) ? Brushes.OrangeRed
+                                                          : new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55));
+
+            // 0x014B：卡死时徽标被红灯占位，这里单独显示，用于分辨固件版本
+            //（=1 ⇒ 固件用旧判据 present&&enable；=0 ⇒ 含 09-29 的 fail_streak 判据）
+            TxtMagActive2.Text = imu.MagActive.ToString();
+            TxtMagActive2.Foreground = imu.MagActive == 1
+                ? new SolidColorBrush(Color.FromRgb(0x6A, 0x1B, 0x9A))
+                : new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33));
+
+            // ---- 计数：RECOVER 带本窗口增量，一眼看出"这一拍新发生了几个毛刺" ----
+            TxtMagRecover.Text = recoverDelta > 0
+                ? $"{imu.MagRecover} (+{recoverDelta})"
+                : imu.MagRecover.ToString();
+            TxtMagRecover.Foreground = recoverDelta > 0
+                ? Brushes.OrangeRed
+                : new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33));
+
+            TxtMagOk.Text = imu.MagOkCnt.ToString();
+            TxtMagOk.Foreground = frozen
+                ? Brushes.OrangeRed
+                : new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33));
+
+            // ERR 带增量：区分"还在重试"与"彻底停摆"靠的就是这个数涨不涨 ——
+            // 单看一张静态截图也能判断，不必盯屏。
+            TxtMagErr.Text = errDelta > 0
+                ? $"{imu.MagErrCnt} (+{errDelta})"
+                : imu.MagErrCnt.ToString();
+            TxtMagErr.Foreground = imu.MagErrCnt > 0
+                ? Brushes.OrangeRed
+                : new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33));
+
+            // ---- I2C 现场快照：HAL / State / ErrorCode 合看才能定位病因 ----
+            TxtMagHal.Text = HalText(imu.MagHal);
+            TxtMagHal.Foreground = imu.MagHal == 0
+                ? new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32))
+                : Brushes.OrangeRed;
+
+            TxtMagI2cState.Text = $"0x{imu.MagI2cState:X2}";
+            TxtMagI2cState.Foreground = imu.MagI2cState == 0x20
+                ? new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33))
+                : Brushes.OrangeRed;
+
+            TxtMagEcode.Text = $"0x{imu.MagI2cEcode:X2}";
+            TxtMagEcode.Foreground = imu.MagI2cEcode == 0
+                ? new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33))
+                : Brushes.OrangeRed;
+
+            // ---- 原始计数：只在变化时重建字符串（避免每 100ms 产生垃圾）----
+            if (imu.MagRawX != _magPrevRawX)
+            {
+                TxtMagRaw.Text  = $"{imu.MagRawX} / {imu.MagRawY} / {imu.MagRawZ}";
+                _magPrevRawX    = imu.MagRawX;
+            }
+
+            _magPrevOkCnt   = imu.MagOkCnt;
+            _magPrevErrCnt  = imu.MagErrCnt;
+            _magPrevRecover = imu.MagRecover;
+        }
+
+        /// <summary>HAL 返回码 -> 可读文字（0=OK 1=ERROR 2=BUSY 3=TIMEOUT）。</summary>
+        private static string HalText(ushort hal) => hal switch
+        {
+            0 => "OK",
+            1 => "ERROR",
+            2 => "BUSY",
+            3 => "TIMEOUT",
+            _ => $"0x{hal:X2}",
+        };
 
         // ============= 场景构建 =============
 
@@ -235,10 +443,22 @@ namespace GamepadSpeedController
             PaintMagButtons(imu.MagEnable == 1);
             BtnMagOn.IsEnabled = BtnMagOff.IsEnabled = !MagCommitBusy;
 
-            // 融合状态徽标：九轴（紫）/ 六轴（灰）/ 离线（红）
+            // ===== I2C 链路诊断（必须在徽标之前跑：徽标要用它给出的"卡死"判据，
+            //       才能把以前那个「六轴(降级?)」的问号变成确定结论）=====
+            UpdateMagDiag(imu, magOk);
+
+            // 融合状态徽标：九轴（紫）/ 六轴（灰）/ 离线·卡死（红）
             if (!magOk)
             {
                 TxtMagState.Text = "MAG 离线";
+                MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+            }
+            else if (_magOkFrozenTicks >= FrozenTicksToConfirm)
+            {
+                // MAG_OK 已连续多拍不涨 ⇒ I2C 读不到，固件按 fail_streak>=3 自动降级。
+                // 这是"它挂了"，与用户有没有关 0x014A 无关，必须优先报出来。
+                // 2026-09-30 起不再显示带问号的「六轴(降级?)」—— 有 0x0188 就是确定结论。
+                TxtMagState.Text = "六轴(I2C 卡死)";
                 MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
             }
             else if (imu.MagActive == 1)
@@ -248,13 +468,17 @@ namespace GamepadSpeedController
                 TxtMagState.Text = "九轴融合";
                 MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0x6A, 0x1B, 0x9A));
             }
+            else if (imu.MagEnable == 0)
+            {
+                // 硬件在线、读数正常，但被用户显式关掉 ⇒ 这是"我关的"
+                TxtMagState.Text = "六轴(已关闭)";
+                MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0x9E, 0x9E, 0x9E));
+            }
             else
             {
-                // 硬件正常但没在九轴，三种可能：
-                //   enable=0             → 被手动关闭
-                //   enable=1 且读数失败  → 固件自动降级（查 0x0188 MAG_OK 是否在增长）
-                //   enable=1 启动最初几帧 → 瞬时态
-                TxtMagState.Text = imu.MagEnable == 1 ? "六轴(降级?)" : "六轴(已关闭)";
+                // enable=1、active=0，但 MAG_OK 仍在涨（未冻结）⇒ 只可能是启动最初几拍：
+                // 固件要读满 3 次失败才降级，读数健康时下一周期就会切回九轴。
+                TxtMagState.Text = "六轴(启动中)";
                 MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0x9E, 0x9E, 0x9E));
             }
 

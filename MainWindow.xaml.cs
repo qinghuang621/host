@@ -470,8 +470,10 @@ namespace GamepadSpeedController
                 }
 
                 // ---- 3. 姿态3D窗口若打开则每 tick 读 IMU 姿态 + 磁力计诊断 ----
-                // 一条 FC03 读 0x014A~0x0183（58 只）：姿态/四元数/θ + MAG 状态/错误码/原始三轴，
-                // 响应 121B ≈ 10.5ms 传输（SendAndReceive 内含保守等待），与电机监控错峰即可
+                // 一条 FC03 读 0x014A~0x018C（67 只）：姿态/四元数/θ + MAG 状态/错误码/原始三轴
+                //   + 【临时诊断】I2C 链路健康度（0x0184~0x018C，固件侧标"定位完删除"）。
+                // 响应 141B ≈ 12.3ms 传输（SendAndReceive 内含保守等待），与电机监控错峰即可。
+                // 67 < 固件 FC03 上限 125（bsp_modbus.c 的 qty 检查），且 0x014A+67 < MODBUS_REG_COUNT(512)。
                 if (_attitudeWindow != null && _mb != null)
                 {
                     try

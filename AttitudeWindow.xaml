@@ -109,6 +109,72 @@
                                FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0"/>
                 </StackPanel>
                 </Border>
+
+                <!-- ===== 【临时诊断 2026-09-23】磁力计 I2C 链路健康度（固件 0x0184~0x018C）=====
+                     ⚠️🔴 与固件同名的"临时诊断区"配套。2026-09-30 长老决定：测试期间保留，
+                     host 先对齐；**将来固件删除 0x0184~0x018C 时，本块要一起删**
+                     （连同 AttitudeWindow.xaml.cs 的 UpdateMagDiag() 与 ModbusClient 的对应常量/字段）。 -->
+                <Border BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Margin="0,5,0,0" Padding="0,4,0,0">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <TextBlock Text="I2C" Foreground="#777777" FontWeight="Bold"
+                                       FontSize="12" VerticalAlignment="Center"/>
+                            <Border x:Name="GlitchLamp" Width="12" Height="12" CornerRadius="6"
+                                    Background="#BDBDBD" Margin="6,0,6,0" VerticalAlignment="Center"
+                                    ToolTip="灰=未建立链路（INIT 失败）　绿=健康　黄闪=毛刺发生但已被自愈救回　红=卡死（MAG_OK 冻结）"/>
+                            <TextBlock x:Name="TxtGlitch" Text="--" Foreground="#555555"
+                                       FontSize="12" FontWeight="Bold" MinWidth="80"
+                                       Margin="0,0,14,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="ACTIVE" Foreground="#777777" FontWeight="Bold"
+                                       FontSize="12" VerticalAlignment="Center"
+                                       ToolTip="0x014B MAG_STATUS。**这是分辨固件版本的关键**：=1 说明固件用的是旧判据(present&amp;&amp;enable)；=0 说明含 09-29 的读数健康判据(fail_streak&lt;3)"/>
+                            <TextBlock x:Name="TxtMagActive2" Text="--" Foreground="#333333"
+                                       FontSize="12" MinWidth="34" Margin="6,0,14,0"/>
+                            <TextBlock Text="RECOVER" Foreground="#777777" FontWeight="Bold"
+                                       FontSize="12" VerticalAlignment="Center"
+                                       ToolTip="0x018C：I2C3 自愈复位次数 = 毛刺发生次数。括号内为本次刷新窗口内的增量"/>
+                            <TextBlock x:Name="TxtMagRecover" Text="--" Foreground="#333333"
+                                       FontSize="12" MinWidth="78" Margin="6,0,14,0"/>
+                            <TextBlock Text="OK" Foreground="#777777" FontWeight="Bold"
+                                       FontSize="12" VerticalAlignment="Center"
+                                       ToolTip="0x0188：I2C 读成功累计（100Hz 读取，正常时约每秒 +100）。不涨即卡死"/>
+                            <TextBlock x:Name="TxtMagOk" Text="--" Foreground="#333333"
+                                       FontSize="12" MinWidth="72" Margin="6,0,14,0"/>
+                            <TextBlock Text="ERR" Foreground="#777777" FontWeight="Bold"
+                                       FontSize="12" VerticalAlignment="Center"
+                                       ToolTip="0x0187：I2C 读失败累计。括号内为增量 —— ERR 还在涨=固件仍在校验总线；ERR 也冻结=读取循环整体停摆"/>
+                            <TextBlock x:Name="TxtMagErr" Text="--" Foreground="#333333"
+                                       FontSize="12" MinWidth="86" Margin="6,0,0,0"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,3,0,0">
+                            <TextBlock Text="HAL" Foreground="#777777" FontWeight="Bold"
+                                       FontSize="12" VerticalAlignment="Center"
+                                       ToolTip="0x0189：最后一次 HAL 返回码。0=OK 1=ERROR 2=BUSY 3=TIMEOUT"/>
+                            <TextBlock x:Name="TxtMagHal" Text="--" Foreground="#333333"
+                                       FontSize="12" MinWidth="68" Margin="6,0,18,0"/>
+                            <TextBlock Text="STATE" Foreground="#777777" FontWeight="Bold"
+                                       FontSize="12" VerticalAlignment="Center"
+                                       ToolTip="0x018A：hi2c3.State。0x20=READY 0x24=BUSY 0xA0=TIMEOUT 0xE0=ERROR"/>
+                            <TextBlock x:Name="TxtMagI2cState" Text="--" Foreground="#333333"
+                                       FontSize="12" MinWidth="58" Margin="6,0,18,0"/>
+                            <TextBlock Text="ECODE" Foreground="#777777" FontWeight="Bold"
+                                       FontSize="12" VerticalAlignment="Center"
+                                       ToolTip="0x018B：hi2c3.ErrorCode。0x04=AF(NACK) 0x01=BERR 0x02=ARLO 0x20=TIMEOUT"/>
+                            <TextBlock x:Name="TxtMagEcode" Text="--" Foreground="#333333"
+                                       FontSize="12" MinWidth="54" Margin="6,0,18,0"/>
+                            <TextBlock Text="RAW" Foreground="#777777" FontWeight="Bold"
+                                       FontSize="12" VerticalAlignment="Center"
+                                       ToolTip="0x0184~0x0186：int16 原始计数（不乘 0.3）"/>
+                            <TextBlock x:Name="TxtMagRaw" Text="--" Foreground="#333333"
+                                       FontSize="12" MinWidth="150" Margin="6,0,0,0"/>
+                            <TextBlock Text="融合" Foreground="#777777" FontWeight="Bold"
+                                       FontSize="12" VerticalAlignment="Center" Margin="14,0,0,0"
+                                       ToolTip="由磁读计数推算的实际融合频率：固件 s_mag_read_div 数的是【循环次数】，满 10 次才读一次磁 ⇒ 融合频率 = (OK+ERR) 速率 × 10。额定 1000 Hz（INS_SAMPLE_PERIOD_MS=1）"/>
+                            <TextBlock x:Name="TxtMagFusion" Text="--" Foreground="#333333"
+                                       FontSize="12" MinWidth="80" Margin="6,0,0,0"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
             </StackPanel>
         </Border>
     </Grid>

@@ -1,7 +1,7 @@
 <Window x:Class="GamepadSpeedController.AttitudeWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="姿态3D可视化" Height="640" Width="760"
+        Title="姿态3D可视化" Height="720" Width="800"
         WindowStartupLocation="CenterOwner" Background="White">
     <Grid>
         <Grid.RowDefinitions>
@@ -36,184 +36,320 @@
             </Viewport3D>
 
             <!-- 2D 标签浮在 Viewport3D 上方，标明左右两个立方体的驱动方式 -->
-            <TextBlock Text="四元数" HorizontalAlignment="Left" Margin="90,12,0,0"
+            <TextBlock Text="四元数" HorizontalAlignment="Left" Margin="120,12,0,0"
                        Foreground="#333333" FontSize="14" FontWeight="Bold" IsHitTestVisible="False"/>
-            <TextBlock Text="欧拉角" HorizontalAlignment="Right" Margin="0,12,90,0"
+            <TextBlock Text="欧拉角" HorizontalAlignment="Right" Margin="0,12,120,0"
                        Foreground="#333333" FontSize="14" FontWeight="Bold" IsHitTestVisible="False"/>
         </Grid>
 
-        <!-- 数值面板：上行欧拉角+状态+温度，中行倾斜角，下行四元数 -->
-        <Border Grid.Row="1" Background="#F2F2F2" BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Padding="10,6">
-            <StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                    <TextBlock Text="Roll"  Foreground="#D32F2F" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtRoll"  Text="0.0°" Foreground="#222222" Margin="6,0,18,0"
-                               FontSize="16" FontWeight="Bold" MinWidth="80"/>
-                    <TextBlock Text="Pitch" Foreground="#2E7D32" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtPitch" Text="0.0°" Foreground="#222222" Margin="6,0,18,0"
-                               FontSize="16" FontWeight="Bold" MinWidth="80"/>
-                    <TextBlock Text="Yaw"   Foreground="#1565C0" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtYaw"   Text="0.0°" Foreground="#222222" Margin="6,0,18,0"
-                               FontSize="16" FontWeight="Bold" MinWidth="80"/>
-                    <TextBlock Text="IMU"   Foreground="#555555" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtStatus" Text="--" Foreground="#222222" Margin="6,0,18,0"
-                               FontSize="14" MinWidth="70"/>
-                    <TextBlock Text="Temp"  Foreground="#555555" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtTemp"   Text="--" Foreground="#222222" Margin="6,0,0,0"
-                               FontSize="14" MinWidth="60"/>
-                </StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,4,0,0">
-                    <TextBlock Text="倾斜角 θ" Foreground="#E65100" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtTilt" Text="0.0°" Foreground="#222222" Margin="6,0,0,0"
-                               FontSize="15" FontWeight="Bold" MinWidth="80"/>
-                    <TextBlock Text="（车体Z轴与竖直向上的夹角）" Foreground="#888888"
-                               FontSize="12" VerticalAlignment="Center" Margin="10,0,0,0"/>
-                </StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,4,0,0">
-                    <TextBlock Text="Quat" Foreground="#777777" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtQuat" Text="( -- )" Foreground="#333333" Margin="6,0,0,0"
-                               FontSize="13" FontWeight="SemiBold"/>
-                </StackPanel>
-                <!-- IST8310 磁力计：融合状态 + 初始化错误码 + 原始三轴 μT + 模值 -->
-                <Border BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Margin="0,6,0,0" Padding="0,5,0,0">
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                    <TextBlock Text="MAG" Foreground="#6A1B9A" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <Border x:Name="MagStateBadge" Background="#BDBDBD" CornerRadius="3"
-                            Margin="8,0,8,0" Padding="8,1">
-                        <TextBlock x:Name="TxtMagState" Text="--" Foreground="White"
-                                   FontSize="13" FontWeight="Bold"/>
-                    </Border>
-                    <!-- 九轴切换按钮：写 0x014A=1 开启 / =0 强制六轴 -->
-                    <Button x:Name="BtnMagOn"  Content="九轴" Width="46" Height="22"
-                            Click="BtnMagOn_Click"  Margin="0,0,4,0" FontSize="11" Padding="0,1"
-                            ToolTip="写 0x014A=1，允许九轴融合（IST8310 在线时激活）"/>
-                    <Button x:Name="BtnMagOff" Content="六轴" Width="46" Height="22"
-                            Click="BtnMagOff_Click" Margin="0,0,12,0" FontSize="11" Padding="0,1"
-                            ToolTip="写 0x014A=0，强制六轴（yaw 会漂）"/>
-                    <TextBlock Text="INIT" Foreground="#777777" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtMagInit" Text="--" Foreground="#333333" Margin="6,0,14,0"
-                               FontSize="13" MinWidth="64"/>
-                    <TextBlock Text="X" Foreground="#D32F2F" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtMagX" Text="--" Foreground="#222222" Margin="4,0,12,0"
-                               FontSize="13" MinWidth="64"/>
-                    <TextBlock Text="Y" Foreground="#2E7D32" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtMagY" Text="--" Foreground="#222222" Margin="4,0,12,0"
-                               FontSize="13" MinWidth="64"/>
-                    <TextBlock Text="Z" Foreground="#1565C0" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtMagZ" Text="--" Foreground="#222222" Margin="4,0,12,0"
-                               FontSize="13" MinWidth="64"/>
-                    <TextBlock Text="|B|" Foreground="#777777" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="TxtMagNorm" Text="--" Foreground="#333333" Margin="6,0,0,0"
-                               FontSize="13" FontWeight="SemiBold" MinWidth="64"/>
-                    <TextBlock Text="μT（未校准，转动车体模值应恒定）" Foreground="#888888"
-                               FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0"/>
-                </StackPanel>
-                </Border>
+        <!-- ===================== 数值面板（2026-10-08 重排）=====================
+             排布约定：
+               · 所有「三轴量」共用同一套五列网格：名称 | X | Y | Z | 单位·说明
+                 （列宽固定 104/80/80/80/*，区块之间因此天然对齐）
+               · 数值一律 Consolas 等宽 + 右对齐 + **强制显示正负号**（i.e. "+0.00;-0.00"）
+                 ⇒ 小数点逐列对齐，刷新时不会左右抖动
+               · 单位不再拼在数值里，统一放最后一列；数值列只留纯数字
+               · 轴色约定：X=roll=红(#D32F2F)  Y=pitch=绿(#2E7D32)  Z=yaw=蓝(#1565C0)
+             ===================================================================== -->
+        <Border Grid.Row="1" Background="#F2F2F2" BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Padding="10,7">
+            <StackPanel MaxWidth="700" HorizontalAlignment="Center">
 
-                <!-- ===== 运动控制输出区（2026-09-30 新增 · 接口文档.md §6.10）=====
-                     上位机 ROS2 要的四组量里的另两组：线加速度（比力）+ 姿态协方差。
-                     协方差对角 = (σ×π/180)²，σ 由固件可写寄存器 0x00C0~0x00C5 决定
-                     （默认 1.0/1.0/10.0 度）⇒ 这里**开方回角度**显示更直观。 -->
-                <Border BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Margin="0,6,0,0" Padding="0,5,0,0">
-                    <StackPanel>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock Text="ACCEL" Foreground="#EF6C00" FontWeight="Bold" VerticalAlignment="Center"
-                                       ToolTip="0x0190~0x0195 机体系线加速度 = 比力（含重力、固件不减）。静止水平时 ACCEL_Z ≈ +9.8 m/s²"/>
-                            <TextBlock Text="X" Foreground="#D32F2F" FontWeight="Bold" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                            <TextBlock x:Name="TxtAccelX" Text="--" Foreground="#222222" Margin="4,0,12,0"
-                                       FontSize="13" MinWidth="66"/>
-                            <TextBlock Text="Y" Foreground="#2E7D32" FontWeight="Bold" VerticalAlignment="Center"/>
-                            <TextBlock x:Name="TxtAccelY" Text="--" Foreground="#222222" Margin="4,0,12,0"
-                                       FontSize="13" MinWidth="66"/>
-                            <TextBlock Text="Z" Foreground="#1565C0" FontWeight="Bold" VerticalAlignment="Center"/>
-                            <TextBlock x:Name="TxtAccelZ" Text="--" Foreground="#222222" Margin="4,0,12,0"
-                                       FontSize="13" MinWidth="66"/>
-                            <TextBlock Text="m/s²（比力，含重力）" Foreground="#888888"
-                                       FontSize="11" VerticalAlignment="Center"/>
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,3,0,0">
-                            <TextBlock Text="COV σ" Foreground="#00838F" FontWeight="Bold" VerticalAlignment="Center"
-                                       ToolTip="0x0196~0x01A7 姿态协方差 3×3（rad²）的对角项开方（deg）。固件非对角恒 0；σ 可现场写 0x00C0~0x00C5"/>
-                            <TextBlock Text="roll" Foreground="#777777" FontSize="11" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                            <TextBlock x:Name="TxtCovRoll" Text="--" Foreground="#222222" Margin="4,0,12,0"
-                                       FontSize="13" MinWidth="56"/>
-                            <TextBlock Text="pitch" Foreground="#777777" FontSize="11" VerticalAlignment="Center"/>
-                            <TextBlock x:Name="TxtCovPitch" Text="--" Foreground="#222222" Margin="4,0,12,0"
-                                       FontSize="13" MinWidth="56"/>
-                            <TextBlock Text="yaw" Foreground="#777777" FontSize="11" VerticalAlignment="Center"/>
-                            <TextBlock x:Name="TxtCovYaw" Text="--" Foreground="#222222" Margin="4,0,12,0"
-                                       FontSize="13" MinWidth="56"/>
-                            <TextBlock Text="°（对角开方）" Foreground="#888888"
-                                       FontSize="11" VerticalAlignment="Center"/>
-                        </StackPanel>
-                    </StackPanel>
-                </Border>
+                <!-- ============ ① 运行状态 ============ -->
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="IMU" Foreground="#444444" FontSize="14" FontWeight="Bold"
+                               VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtStatus" Text="--" Foreground="#555555" FontSize="16" FontWeight="Bold"
+                               VerticalAlignment="Center" Margin="8,0,0,0" MinWidth="56"/>
+                    <TextBlock Text="板温" Foreground="#444444" FontSize="14" FontWeight="Bold"
+                               VerticalAlignment="Center" Margin="24,0,0,0"/>
+                    <TextBlock x:Name="TxtTemp" Text="--" Foreground="#333333" FontSize="16" FontWeight="Bold"
+                               FontFamily="Consolas" VerticalAlignment="Center" Margin="8,0,0,0" MinWidth="56"
+                               TextAlignment="Right"/>
+                    <TextBlock Text="℃" Foreground="#9E9E9E" FontSize="13" VerticalAlignment="Center"
+                               Margin="4,0,0,0"/>
+                </StackPanel>
 
-                <!-- ===== 【临时诊断 2026-09-23】磁力计 I2C 链路健康度（固件 0x0184~0x018C）=====
-                     ⚠️🔴 与固件同名的"临时诊断区"配套。2026-09-30 长老决定：测试期间保留，
-                     host 先对齐；**将来固件删除 0x0184~0x018C 时，本块要一起删**
-                     （连同 AttitudeWindow.xaml.cs 的 UpdateMagDiag() 与 ModbusClient 的对应常量/字段）。 -->
-                <Border BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Margin="0,5,0,0" Padding="0,4,0,0">
-                    <StackPanel>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock Text="I2C" Foreground="#777777" FontWeight="Bold"
-                                       FontSize="12" VerticalAlignment="Center"/>
-                            <Border x:Name="GlitchLamp" Width="12" Height="12" CornerRadius="6"
-                                    Background="#BDBDBD" Margin="6,0,6,0" VerticalAlignment="Center"
-                                    ToolTip="灰=未建立链路（INIT 失败）　绿=健康　黄闪=毛刺发生但已被自愈救回　红=卡死（MAG_OK 冻结）"/>
-                            <TextBlock x:Name="TxtGlitch" Text="--" Foreground="#555555"
-                                       FontSize="12" FontWeight="Bold" MinWidth="80"
-                                       Margin="0,0,14,0" VerticalAlignment="Center"/>
-                            <TextBlock Text="ACTIVE" Foreground="#777777" FontWeight="Bold"
-                                       FontSize="12" VerticalAlignment="Center"
-                                       ToolTip="0x014B MAG_STATUS。**这是分辨固件版本的关键**：=1 说明固件用的是旧判据(present&amp;&amp;enable)；=0 说明含 09-29 的读数健康判据(fail_streak&lt;3)"/>
-                            <TextBlock x:Name="TxtMagActive2" Text="--" Foreground="#333333"
-                                       FontSize="12" MinWidth="34" Margin="6,0,14,0"/>
-                            <TextBlock Text="RECOVER" Foreground="#777777" FontWeight="Bold"
-                                       FontSize="12" VerticalAlignment="Center"
-                                       ToolTip="0x018C：I2C3 自愈复位次数 = 毛刺发生次数。括号内为本次刷新窗口内的增量"/>
-                            <TextBlock x:Name="TxtMagRecover" Text="--" Foreground="#333333"
-                                       FontSize="12" MinWidth="78" Margin="6,0,14,0"/>
-                            <TextBlock Text="OK" Foreground="#777777" FontWeight="Bold"
-                                       FontSize="12" VerticalAlignment="Center"
-                                       ToolTip="0x0188：I2C 读成功累计（100Hz 读取，正常时约每秒 +100）。不涨即卡死"/>
-                            <TextBlock x:Name="TxtMagOk" Text="--" Foreground="#333333"
-                                       FontSize="12" MinWidth="72" Margin="6,0,14,0"/>
-                            <TextBlock Text="ERR" Foreground="#777777" FontWeight="Bold"
-                                       FontSize="12" VerticalAlignment="Center"
-                                       ToolTip="0x0187：I2C 读失败累计。括号内为增量 —— ERR 还在涨=固件仍在校验总线；ERR 也冻结=读取循环整体停摆"/>
-                            <TextBlock x:Name="TxtMagErr" Text="--" Foreground="#333333"
-                                       FontSize="12" MinWidth="86" Margin="6,0,0,0"/>
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,3,0,0">
-                            <TextBlock Text="HAL" Foreground="#777777" FontWeight="Bold"
-                                       FontSize="12" VerticalAlignment="Center"
-                                       ToolTip="0x0189：最后一次 HAL 返回码。0=OK 1=ERROR 2=BUSY 3=TIMEOUT"/>
-                            <TextBlock x:Name="TxtMagHal" Text="--" Foreground="#333333"
-                                       FontSize="12" MinWidth="68" Margin="6,0,18,0"/>
-                            <TextBlock Text="STATE" Foreground="#777777" FontWeight="Bold"
-                                       FontSize="12" VerticalAlignment="Center"
-                                       ToolTip="0x018A：hi2c3.State。0x20=READY 0x24=BUSY 0xA0=TIMEOUT 0xE0=ERROR"/>
-                            <TextBlock x:Name="TxtMagI2cState" Text="--" Foreground="#333333"
-                                       FontSize="12" MinWidth="58" Margin="6,0,18,0"/>
-                            <TextBlock Text="ECODE" Foreground="#777777" FontWeight="Bold"
-                                       FontSize="12" VerticalAlignment="Center"
-                                       ToolTip="0x018B：hi2c3.ErrorCode。0x04=AF(NACK) 0x01=BERR 0x02=ARLO 0x20=TIMEOUT"/>
-                            <TextBlock x:Name="TxtMagEcode" Text="--" Foreground="#333333"
-                                       FontSize="12" MinWidth="54" Margin="6,0,18,0"/>
-                            <TextBlock Text="RAW" Foreground="#777777" FontWeight="Bold"
-                                       FontSize="12" VerticalAlignment="Center"
-                                       ToolTip="0x0184~0x0186：int16 原始计数（不乘 0.3）"/>
-                            <TextBlock x:Name="TxtMagRaw" Text="--" Foreground="#333333"
-                                       FontSize="12" MinWidth="150" Margin="6,0,0,0"/>
-                            <TextBlock Text="融合" Foreground="#777777" FontWeight="Bold"
-                                       FontSize="12" VerticalAlignment="Center" Margin="14,0,0,0"
-                                       ToolTip="由磁读计数推算的实际融合频率：固件 s_mag_read_div 数的是【循环次数】，满 10 次才读一次磁 ⇒ 融合频率 = (OK+ERR) 速率 × 10。额定 1000 Hz（INS_SAMPLE_PERIOD_MS=1）"/>
-                            <TextBlock x:Name="TxtMagFusion" Text="--" Foreground="#333333"
-                                       FontSize="12" MinWidth="80" Margin="6,0,0,0"/>
-                        </StackPanel>
+                <Border BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Height="1" Margin="0,7,0,0"/>
+
+                <!-- ============ ② 姿态（列头 + 欧拉角 + 倾斜角 + 四元数）============ -->
+                <Grid Margin="0,5,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="112"/>
+                        <ColumnDefinition Width="96"/>
+                        <ColumnDefinition Width="96"/>
+                        <ColumnDefinition Width="96"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="20"/>
+                        <RowDefinition Height="32"/>
+                        <RowDefinition Height="28"/>
+                        <RowDefinition Height="28"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- 列头：下行各三轴区块共用这套列语义 -->
+                    <TextBlock Grid.Row="0" Grid.Column="1" Text="X" Foreground="#D32F2F" FontSize="12"
+                               FontWeight="Bold" HorizontalAlignment="Right" Margin="0,0,12,0"/>
+                    <TextBlock Grid.Row="0" Grid.Column="2" Text="Y" Foreground="#2E7D32" FontSize="12"
+                               FontWeight="Bold" HorizontalAlignment="Right" Margin="0,0,12,0"/>
+                    <TextBlock Grid.Row="0" Grid.Column="3" Text="Z" Foreground="#1565C0" FontSize="12"
+                               FontWeight="Bold" HorizontalAlignment="Right" Margin="0,0,12,0"/>
+                    <TextBlock Grid.Row="0" Grid.Column="4" Text="单位 / 说明" Foreground="#9E9E9E" FontSize="12"
+                               VerticalAlignment="Center" Margin="4,0,0,0"/>
+
+                    <!-- 欧拉角 0x0150~0x0154 -->
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="姿态角" Foreground="#444444" FontSize="14"
+                               FontWeight="Bold" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtRoll" Grid.Row="1" Grid.Column="1" Text="--" Foreground="#D32F2F"
+                               FontSize="18" FontWeight="Bold" FontFamily="Consolas"
+                               HorizontalAlignment="Right" Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtPitch" Grid.Row="1" Grid.Column="2" Text="--" Foreground="#2E7D32"
+                               FontSize="18" FontWeight="Bold" FontFamily="Consolas"
+                               HorizontalAlignment="Right" Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtYaw" Grid.Row="1" Grid.Column="3" Text="--" Foreground="#1565C0"
+                               FontSize="18" FontWeight="Bold" FontFamily="Consolas"
+                               HorizontalAlignment="Right" Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Row="1" Grid.Column="4" Text="deg    X = roll，Y = pitch，Z = yaw"
+                               Foreground="#9E9E9E" FontSize="12" VerticalAlignment="Center" Margin="4,0,0,0"/>
+
+                    <!-- 倾斜角 θ（专为 LUT 标定加的辅助量）-->
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="倾斜角 θ" Foreground="#E65100" FontSize="14"
+                               FontWeight="Bold" VerticalAlignment="Center"
+                               ToolTip="0x015C 附近：θ = acos(cos(pitch)·cos(roll))。与风机前馈控制内部用的是同一个数"/>
+                    <TextBlock x:Name="TxtTilt" Grid.Row="2" Grid.Column="1" Text="--" Foreground="#E65100"
+                               FontSize="18" FontWeight="Bold" FontFamily="Consolas"
+                               HorizontalAlignment="Right" Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Row="2" Grid.Column="4" Text="deg    车体 Z 轴与竖直向上的夹角（0~180）"
+                               Foreground="#9E9E9E" FontSize="12" VerticalAlignment="Center" Margin="4,0,0,0"/>
+
+                    <!-- 四元数（4 个分量 ⇒ 跨列）-->
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="四元数" Foreground="#444444" FontSize="14"
+                               FontWeight="Bold" VerticalAlignment="Center"
+                               ToolTip="0x0174~0x017B，顺序 (w,x,y,z)。⚠️ ROS2 geometry_msgs/Quaternion 是 (x,y,z,w)，必须重排"/>
+                    <TextBlock x:Name="TxtQuat" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="4" Text="--"
+                               Foreground="#333333" FontSize="15" FontFamily="Consolas"
+                               VerticalAlignment="Center" Margin="4,0,0,0"/>
+                </Grid>
+
+                <Border BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Height="1" Margin="0,6,0,0"/>
+
+                <!-- ============ ③ 运动控制输出区（接口文档.md §6.10）============
+                     上位机 ROS2 要的四组量：角速度 / 线加速度 / 四元数 / 姿态协方差。
+                     角速度 = 陀螺直接读数（机体系，未滤波）。
+                     线加速度 = 比力（含重力、固件不减）⇒ 静止水平时 Z ≈ +9.8。
+                     协方差固件给的是方差(rad²) ⇒ 这里开方回标准差再转度，才好与 σ 设定值对照。 -->
+                <Grid Margin="0,5,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="112"/>
+                        <ColumnDefinition Width="96"/>
+                        <ColumnDefinition Width="96"/>
+                        <ColumnDefinition Width="96"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="28"/>
+                        <RowDefinition Height="28"/>
+                        <RowDefinition Height="28"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- 角速度 0x0156~0x015B -->
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="角速度" Foreground="#444444" FontSize="14"
+                               FontWeight="Bold" VerticalAlignment="Center"
+                               ToolTip="0x0156~0x015B：陀螺直接读数，机体系，未做任何滤波/坐标变换"/>
+                    <TextBlock x:Name="TxtGyroX" Grid.Row="0" Grid.Column="1" Text="--" Foreground="#D32F2F"
+                               FontSize="16" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtGyroY" Grid.Row="0" Grid.Column="2" Text="--" Foreground="#2E7D32"
+                               FontSize="16" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtGyroZ" Grid.Row="0" Grid.Column="3" Text="--" Foreground="#1565C0"
+                               FontSize="16" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Row="0" Grid.Column="4" Text="rad/s   机体系（陀螺原始读数）"
+                               Foreground="#9E9E9E" FontSize="12" VerticalAlignment="Center" Margin="4,0,0,0"/>
+
+                    <!-- 线加速度 0x0190~0x0195 -->
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="线加速度" Foreground="#444444" FontSize="14"
+                               FontWeight="Bold" VerticalAlignment="Center"
+                               ToolTip="0x0190~0x0195：机体系比力。**含重力、固件不减**，与 ROS2 linear_acceleration 口径一致"/>
+                    <TextBlock x:Name="TxtAccelX" Grid.Row="1" Grid.Column="1" Text="--" Foreground="#D32F2F"
+                               FontSize="16" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtAccelY" Grid.Row="1" Grid.Column="2" Text="--" Foreground="#2E7D32"
+                               FontSize="16" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtAccelZ" Grid.Row="1" Grid.Column="3" Text="--" Foreground="#1565C0"
+                               FontSize="16" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Row="1" Grid.Column="4" Text="m/s²   比力（含重力；静止水平 Z ≈ +9.8）"
+                               Foreground="#9E9E9E" FontSize="12" VerticalAlignment="Center" Margin="4,0,0,0"/>
+
+                    <!-- 姿态协方差对角 0x0196~0x01A7 -->
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="协方差 σ" Foreground="#444444" FontSize="14"
+                               FontWeight="Bold" VerticalAlignment="Center"
+                               ToolTip="0x0196~0x01A7 的对角项开方。σ 可现场写 0x00C0~0x00C5（默认 1/1/10 度，断电保持）"/>
+                    <TextBlock x:Name="TxtCovRoll" Grid.Row="2" Grid.Column="1" Text="--" Foreground="#00838F"
+                               FontSize="16" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtCovPitch" Grid.Row="2" Grid.Column="2" Text="--" Foreground="#00838F"
+                               FontSize="16" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtCovYaw" Grid.Row="2" Grid.Column="3" Text="--" Foreground="#00838F"
+                               FontSize="16" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Row="2" Grid.Column="4" Text="deg   对角开方（全 0 = 未写 σ，ROS2 会丢弃姿态）"
+                               Foreground="#9E9E9E" FontSize="12" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                </Grid>
+
+                <Border BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Height="1" Margin="0,6,0,0"/>
+
+                <!-- ============ ④ IST8310 磁力计（接口文档.md §6.9）============ -->
+                <Grid Margin="0,5,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="112"/>
+                        <ColumnDefinition Width="96"/>
+                        <ColumnDefinition Width="96"/>
+                        <ColumnDefinition Width="96"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="28"/>
+                        <RowDefinition Height="28"/>
+                        <RowDefinition Height="30"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="磁感应强度" Foreground="#6A1B9A" FontSize="14"
+                               FontWeight="Bold" VerticalAlignment="Center"
+                               ToolTip="0x017E~0x0183：三个 float32，单位 μT。**未做硬铁/软铁校准**"/>
+                    <TextBlock x:Name="TxtMagX" Grid.Row="0" Grid.Column="1" Text="--" Foreground="#D32F2F"
+                               FontSize="16" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtMagY" Grid.Row="0" Grid.Column="2" Text="--" Foreground="#2E7D32"
+                               FontSize="16" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtMagZ" Grid.Row="0" Grid.Column="3" Text="--" Foreground="#1565C0"
+                               FontSize="16" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Row="0" Grid.Column="4" Text="μT   机体系，未标定"
+                               Foreground="#9E9E9E" FontSize="12" VerticalAlignment="Center" Margin="4,0,0,0"/>
+
+                    <!-- |B| 模值：转动不变量 —— 「该不该做磁标定」的廉价判据 -->
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="模值 |B|" Foreground="#6A1B9A" FontSize="14"
+                               FontWeight="Bold" VerticalAlignment="Center"
+                               ToolTip="磁感应强度模值。**转动车体时应保持恒定**；读数漂移说明存在附加磁场或软铁畸变"/>
+                    <TextBlock x:Name="TxtMagNorm" Grid.Row="1" Grid.Column="1" Text="--" Foreground="#6A1B9A"
+                               FontSize="16" FontWeight="Bold" FontFamily="Consolas" HorizontalAlignment="Right"
+                               Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Row="1" Grid.Column="4" Text="μT   转动不变量（转动时漂移 ⇒ 有附加磁场）"
+                               Foreground="#9E9E9E" FontSize="12" VerticalAlignment="Center" Margin="4,0,0,0"/>
+
+                    <!-- 融合状态徽章 + 九轴/六轴切换 + 初始化码 -->
+                    <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="5" Orientation="Horizontal"
+                                Margin="0,2,0,0">
+                        <TextBlock Text="融合" Foreground="#6A1B9A" FontSize="14" FontWeight="Bold"
+                                   VerticalAlignment="Center"/>
+                        <Border x:Name="MagStateBadge" Background="#BDBDBD" CornerRadius="3"
+                                Margin="6,0,6,0" Padding="8,1" VerticalAlignment="Center">
+                            <TextBlock x:Name="TxtMagState" Text="--" Foreground="White"
+                                       FontSize="14" FontWeight="Bold"/>
+                        </Border>
+                        <Button x:Name="BtnMagOn" Content="九轴" Width="48" Height="24"
+                                Click="BtnMagOn_Click" Margin="0,0,4,0" FontSize="12" Padding="0,1"
+                                ToolTip="写 0x014A=1，允许九轴融合（IST8310 在线时激活）"/>
+                        <Button x:Name="BtnMagOff" Content="六轴" Width="48" Height="24"
+                                Click="BtnMagOff_Click" Margin="0,0,14,0" FontSize="12" Padding="0,1"
+                                ToolTip="写 0x014A=0，强制六轴（yaw 会漂）"/>
+                        <TextBlock Text="INIT" Foreground="#9E9E9E" FontSize="12" VerticalAlignment="Center"
+                                   ToolTip="ist8310_init() 返回码：0=成功，0x40=NO_SENSOR，1~4=第 N 个配置寄存器回读失败"/>
+                        <TextBlock x:Name="TxtMagInit" Text="--" Foreground="#555555" FontSize="12"
+                                   VerticalAlignment="Center" Margin="5,0,0,0"/>
                     </StackPanel>
-                </Border>
+                </Grid>
+
+                <Border BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Height="1" Margin="0,6,0,0"/>
+
+                <!-- ============ ⑤ 【临时诊断】I2C 链路健康度（固件 0x0184~0x018C）============
+                     ⚠️🔴 与固件同名的"临时诊断区"配套。现行决定：测试期间保留、host 先对齐；
+                     **将来固件删除 0x0184~0x018C 时，本块要一起删**（连同 AttitudeWindow.xaml.cs
+                     的 UpdateMagDiag() 与 ModbusClient 的对应常量/字段）。 -->
+                <Grid Margin="0,5,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="20"/>
+                        <RowDefinition Height="20"/>
+                        <RowDefinition Height="20"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal">
+                        <Border x:Name="GlitchLamp" Width="11" Height="11" CornerRadius="6"
+                                Background="#BDBDBD" Margin="0,0,5,0" VerticalAlignment="Center"
+                                ToolTip="灰 = 未建立链路　绿 = 健康　黄闪 = 毛刺发生但已被自愈救回　红 = 卡死（MAG_OK 冻结）"/>
+                        <TextBlock x:Name="TxtGlitch" Text="--" Foreground="#555555" FontSize="11"
+                                   FontWeight="Bold" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal">
+                        <TextBlock Text="ACTIVE" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
+                                   ToolTip="0x014B MAG_STATUS。**分辨固件版本的关键**：=1 旧判据(present&amp;&amp;enable)；=0 含 09-29 的读数健康判据(fail_streak&lt;3)"/>
+                        <TextBlock x:Name="TxtMagActive2" Text="--" Foreground="#333333" FontSize="11"
+                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal">
+                        <TextBlock Text="RECOVER" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
+                                   ToolTip="0x018C：I2C3 自愈复位次数 = 毛刺发生次数。括号内为本次刷新窗口内的增量"/>
+                        <TextBlock x:Name="TxtMagRecover" Text="--" Foreground="#333333" FontSize="11"
+                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Row="0" Grid.Column="3" Orientation="Horizontal">
+                        <TextBlock Text="OK" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
+                                   ToolTip="0x0188：I2C 读成功累计（100 Hz 读取，正常约每秒 +100）。不涨即卡死"/>
+                        <TextBlock x:Name="TxtMagOk" Text="--" Foreground="#333333" FontSize="11"
+                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Row="0" Grid.Column="4" Orientation="Horizontal">
+                        <TextBlock Text="ERR" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
+                                   ToolTip="0x0187：I2C 读失败累计。ERR 还在涨 = 固件仍在校验总线；ERR 也冻结 = 读取循环整体停摆"/>
+                        <TextBlock x:Name="TxtMagErr" Text="--" Foreground="#333333" FontSize="11"
+                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal">
+                        <TextBlock Text="HAL" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
+                                   ToolTip="0x0189：最后一次 HAL 返回码。0=OK 1=ERROR 2=BUSY 3=TIMEOUT"/>
+                        <TextBlock x:Name="TxtMagHal" Text="--" Foreground="#333333" FontSize="11"
+                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal">
+                        <TextBlock Text="STATE" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
+                                   ToolTip="0x018A：hi2c3.State。0x20=READY 0x24=BUSY 0xA0=TIMEOUT 0xE0=ERROR"/>
+                        <TextBlock x:Name="TxtMagI2cState" Text="--" Foreground="#333333" FontSize="11"
+                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal">
+                        <TextBlock Text="ECODE" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
+                                   ToolTip="0x018B：hi2c3.ErrorCode。0x04=AF(NACK) 0x01=BERR 0x02=ARLO 0x20=TIMEOUT"/>
+                        <TextBlock x:Name="TxtMagEcode" Text="--" Foreground="#333333" FontSize="11"
+                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Row="1" Grid.Column="3" Orientation="Horizontal">
+                        <TextBlock Text="融合" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
+                                   ToolTip="实测融合频率。A1（实测 dt）落地后此值**不再需要对齐任何常量**，仅作监控；&lt;900 Hz 会变色"/>
+                        <TextBlock x:Name="TxtMagFusion" Text="--" Foreground="#333333" FontSize="11"
+                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="5" Orientation="Horizontal">
+                        <TextBlock Text="RAW" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
+                                   ToolTip="0x0184~0x0186：int16 原始计数（不乘 0.3）。仅排障用，标定采集请用上面的 μT"/>
+                        <TextBlock x:Name="TxtMagRaw" Text="--" Foreground="#333333" FontSize="11"
+                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Grid>
             </StackPanel>
         </Border>
     </Grid>

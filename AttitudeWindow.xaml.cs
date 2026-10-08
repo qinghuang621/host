@@ -140,8 +140,37 @@ namespace GamepadSpeedController
         //                                ⇒ **自愈没生效**（固件版本旧 / 自愈分支有 bug）
         //                · 卡死·停摆  —— ERR 也冻结：连尝试都没有
         //                                ⇒ 读取循环整体停了（InsTask 卡住 / s_mag_present 掉 0）
-        private void UpdateMagDiag(ImuData imu, bool magOk)
+        private void UpdateMagDiag(ImuData imu, bool magOk, bool warmup)
         {
+            // ===================== 预热期豁免（2026-10-08）=====================
+            // 固件 ins_init() 里的预热是**阻塞循环**（等温控达标，最长 INS_TEMP_BOOT_TIMEOUT_MS），
+            // 此时姿态任务主循环尚未启动 ⇒ publish_snapshot() 从未执行 ⇒ 除状态寄存器
+            // 0x015E（它在提前 return 之前就写了）以外的姿态 / 磁 / 诊断寄存器**全都保持初值 0**。
+            //
+            // 🔴 后果（实测于 2026-10-08）：MagInitErr 读回 0 ⇒ 下面算出的 magOk 恰好 true
+            //    （**假通过**），而 MagOkCnt 恒 0 ⇒ 4 拍（约 400 ms）后判「卡死·停摆」、
+            //    灯变红、徽章变「六轴(I2C 卡死)」。**每次上电都会先报一段假故障**；
+            //    若用 USB 供电（温度到不了目标）更会一路报满 20 s 超时。
+            //
+            // ⇒ 预热期整体豁免，并把 _magDiagPrimed 打回 false：
+            //    让退出预热后的**第一拍重新登记基线**，否则预热期累计的拍数会立刻触发误判。
+            if (warmup)
+            {
+                _magDiagPrimed       = false;
+                _magOkFrozenTicks    = 0;
+                _magGlitchFlashUntil = 0;
+
+                GlitchLamp.Background = new SolidColorBrush(Color.FromRgb(0xBD, 0xBD, 0xBD));
+                TxtGlitch.Text        = "预热中";
+                TxtGlitch.Foreground  = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
+
+                TxtMagActive2.Text = TxtMagRecover.Text = TxtMagOk.Text = TxtMagErr.Text = "--";
+                TxtMagHal.Text = TxtMagI2cState.Text = TxtMagEcode.Text = TxtMagRaw.Text = "--";
+                TxtMagFusion.Text = "--";
+                TxtMagFusion.Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
+                return;
+            }
+
             // 首拍只登记基线：固件计数是**上电以来**的累计值，
             // 若直接和历史比，会把开机前发生过的毛刺当成"刚发生"而误闪一次。
             if (!_magDiagPrimed)
@@ -312,15 +341,15 @@ namespace GamepadSpeedController
             _sceneBuilt = true;
 
             // 两个形状完全相同的立方体，分别放到左右两个 ModelVisual3D
-            // 左（四元数）平移 -1.4，右（欧拉角）平移 +1.4
+            // 左（四元数）平移 -0.9，右（欧拉角）平移 +0.9
             CubeQuat.Content = BuildCubeGroup();
             var mq = Matrix3D.Identity;
-            mq.Translate(new Vector3D(-1.4, 0, 0));
+            mq.Translate(new Vector3D(-0.9, 0, 0));
             CubeQuat.Transform = new MatrixTransform3D(mq);
 
             CubeEuler.Content = BuildCubeGroup();
             var me = Matrix3D.Identity;
-            me.Translate(new Vector3D(1.4, 0, 0));
+            me.Translate(new Vector3D(0.9, 0, 0));
             CubeEuler.Transform = new MatrixTransform3D(me);
         }
 
@@ -334,7 +363,7 @@ namespace GamepadSpeedController
             var cube = new Model3DGroup();
 
             // 立方体本体：6 个面按轴向着色（亮色=正方向，深色=负方向）
-            double sX = 0.80, sY = 0.55, sZ = 0.37;
+            double sX = 0.50, sY = 0.35, sZ = 0.23;
             cube.Children.Add(MakeFace( sX, 0, 0, new Vector3D( 1, 0, 0), sY, sZ, Color.FromRgb(0xEF, 0x53, 0x50))); // +X
             cube.Children.Add(MakeFace(-sX, 0, 0, new Vector3D(-1, 0, 0), sY, sZ, Color.FromRgb(0xC6, 0x28, 0x28))); // -X
             cube.Children.Add(MakeFace(0,  sY, 0, new Vector3D(0,  1, 0), sX, sZ, Color.FromRgb(0x66, 0xBB, 0x6A))); // +Y
@@ -347,11 +376,11 @@ namespace GamepadSpeedController
             var yColor = Color.FromRgb(0x2E, 0x7D, 0x32);
             var zColor = Color.FromRgb(0x15, 0x65, 0xC0);
 
-            var arrowX = MakeArrow(1.05, 0.25, xColor);
+            var arrowX = MakeArrow(0.65, 0.16, xColor);
             arrowX.Transform = new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 1, 0), 90));  // +Z → +X
-            var arrowY = MakeArrow(1.05, 0.25, yColor);
+            var arrowY = MakeArrow(0.65, 0.16, yColor);
             arrowY.Transform = new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(1, 0, 0), -90)); // +Z → +Y
-            var arrowZ = MakeArrow(1.05, 0.25, zColor);                                                    // 沿 +Z
+            var arrowZ = MakeArrow(0.65, 0.16, zColor);                                                    // 沿 +Z
 
             cube.Children.Add(arrowX);
             cube.Children.Add(arrowY);
@@ -370,6 +399,22 @@ namespace GamepadSpeedController
         {
             if (!_sceneBuilt) return;
 
+            // ===================== 预热期（IMU 状态 = 1）=====================
+            // 固件预热期内主循环未跑、快照不发布 ⇒ 除 0x015E 状态外所有寄存器读回 0。
+            // 🔴 那些 0 **不是真实读数**，绝不能再当数据展示（0.0° / 0.0 μT 会让人误以为
+            //    "姿态真的就是零"）。预热期一律显示 "--"；I2C 卡死判据整体豁免，
+            //    见 UpdateMagDiag 的预热期分支。
+            // 前提：状态寄存器 0x015E 不在快照内（bsp_modbus.c 在 INS_get_snapshot 的
+            //       提前 return **之前**就写了它）⇒ 预热期它照样能读到 1（加热中）。
+            bool warmup = imu.Status == 1;
+
+            // 预热期 ⇒ "--"；否则按各自精度输出。数值一律**强制带正负号**，
+            // 配合 Consolas 等宽 + 右对齐 ⇒ 小数点逐列对齐、刷新时不抖动。
+            string Num1(double v) => warmup ? "--" : $"{v:+0.0;-0.0;0.0}";
+            string Num2(double v) => warmup ? "--" : $"{v:+0.00;-0.00;0.00}";
+            string Num3(double v) => warmup ? "--" : $"{v:+0.000;-0.000;0.000}";
+            string Pos2(double v) => warmup ? "--" : $"{v:F2}";   // 恒正量（协方差开方）
+
             // ========== 左：四元数驱动 ==========
             // 固件四元数约定：body→earth，顺序 (w,x,y,z)，已归一化。
             // WPF Quaternion(x,y,z,w) 直接对应。
@@ -387,7 +432,7 @@ namespace GamepadSpeedController
                 qQuat = Quaternion.Identity;
             }
             var mL = Matrix3D.Identity;
-            mL.Translate(new Vector3D(-1.4, 0, 0));
+            mL.Translate(new Vector3D(-0.9, 0, 0));
             mL.Rotate(qQuat);
             CubeQuat.Transform = new MatrixTransform3D(mL);
 
@@ -397,14 +442,17 @@ namespace GamepadSpeedController
             var qYaw   = new Quaternion(new Vector3D(0, 0, 1), imu.Yaw);
             var qEuler = Quaternion.Multiply(Quaternion.Multiply(qYaw, qPitch), qRoll);
             var mR = Matrix3D.Identity;
-            mR.Translate(new Vector3D(1.4, 0, 0));
+            mR.Translate(new Vector3D(0.9, 0, 0));
             mR.Rotate(qEuler);
             CubeEuler.Transform = new MatrixTransform3D(mR);
 
             // 数值显示
-            TxtRoll.Text  = $"{imu.Roll:F1}°";
-            TxtPitch.Text = $"{imu.Pitch:F1}°";
-            TxtYaw.Text   = $"{imu.Yaw:F1}°";
+            // ⚠️ 单位已写进 XAML 的"单位列" ⇒ 这里只输出**纯数字**（不再拼 ° / ℃ / μT）。
+            //    一律用 "+0.0;-0.0;0.0" 这类**强制带正负号**的格式：Consolas 等宽 + 右对齐时
+            //    正负数宽度一致 ⇒ 小数点逐列对齐，数值刷新时不会左右抖动。
+            TxtRoll.Text  = Num1(imu.Roll);
+            TxtPitch.Text = Num1(imu.Pitch);
+            TxtYaw.Text   = Num1(imu.Yaw);
 
             TxtStatus.Text = imu.Status switch
             {
@@ -417,38 +465,55 @@ namespace GamepadSpeedController
             TxtStatus.Foreground = imu.Status == 2
                 ? Brushes.Green
                 : (imu.Status == 3 ? Brushes.OrangeRed : Brushes.Gray);
-            TxtTemp.Text = $"{imu.TempX10 / 10.0:F1}℃";
+            // 温度：预热期**照常显示** —— 固件 2026-10-08 起在预热循环里也会发布快照，
+            // 而温度正是判断"为什么预热这么久"最需要的量（USB 供电到不了目标时会烧满 20s）。
+            // 旧固件预热期读回 0 ⇒ 此时退回 "--"，不让 0.0℃ 冒充读数。
+            TxtTemp.Text = (warmup && imu.TempX10 == 0) ? "--" : $"{imu.TempX10 / 10.0:F1}";
 
-            // 倾斜角：车体 z 轴与竖直向上的夹角，0~180°
-            TxtTilt.Text = $"{imu.TiltTheta:F1}°";
+            // 倾斜角：车体 z 轴与竖直向上的夹角，0~180°（恒正，无需符号位）
+            TxtTilt.Text = warmup ? "--" : $"{imu.TiltTheta:F1}";
 
-            // 四元数数值（固件顺序 w,x,y,z）
-            TxtQuat.Text = norm2 > 0.001
-                ? $"(w={imu.Qw:F3}, x={imu.Qx:F3}, y={imu.Qy:F3}, z={imu.Qz:F3})"
-                : "( -- )";
+            // 四元数数值（固件顺序 w,x,y,z）。逐个带符号 ⇒ 等宽下四段各自对齐。
+            TxtQuat.Text = warmup
+                ? "--"
+                : (norm2 > 0.001
+                    ? $"w {imu.Qw:+0.000;-0.000;0.000}   x {imu.Qx:+0.000;-0.000;0.000}   "
+                    + $"y {imu.Qy:+0.000;-0.000;0.000}   z {imu.Qz:+0.000;-0.000;0.000}"
+                    : "( -- )");
+
+            // ===== 角速度（0x0156~0x015B，接口文档.md §6.6）=====
+            // 陀螺**原始读数**：机体系、rad/s、未做任何滤波或坐标变换。
+            // 固件侧 A1（实测 dt）只影响姿态积分，不改这三个数。
+            // ⚠️ 静止时不归零是正常的 —— 它含陀螺零偏（0.00x rad/s 量级）；
+            //    零偏随温度漂移，且 Mahony 的 Ki=0（无积分项）只能靠 P 项压成稳态误差。
+            TxtGyroX.Text = Num3(imu.GyroX);
+            TxtGyroY.Text = Num3(imu.GyroY);
+            TxtGyroZ.Text = Num3(imu.GyroZ);
 
             // ========== 运动控制输出区（0x0190~0x01A7，接口文档.md §6.10）==========
             // 线加速度：机体系**比力**（含重力、固件不减）。静止水平时 ACCEL_Z ≈ +9.8，
             // 可当"加计通道是否正常"的快速判据（不在 ±9.8 附近就要查）。
-            TxtAccelX.Text = $"{imu.AccelX:F2}";
-            TxtAccelY.Text = $"{imu.AccelY:F2}";
-            TxtAccelZ.Text = $"{imu.AccelZ:F2}";
+            TxtAccelX.Text = Num2(imu.AccelX);
+            TxtAccelY.Text = Num2(imu.AccelY);
+            TxtAccelZ.Text = Num2(imu.AccelZ);
 
             // 姿态协方差：固件给的是**方差**（rad²）⇒ 开方回标准差、再转度，
             // 才好和固件的 σ 设定值（0x00C0~0x00C5，默认 1.0/1.0/10.0 度）直接对照。
             double covRoll  = Math.Sqrt(Math.Max(0.0, imu.CovRoll))  * 180.0 / Math.PI;
             double covPitch = Math.Sqrt(Math.Max(0.0, imu.CovPitch)) * 180.0 / Math.PI;
             double covYaw   = Math.Sqrt(Math.Max(0.0, imu.CovYaw))   * 180.0 / Math.PI;
-            TxtCovRoll.Text  = $"{covRoll:F2}";
-            TxtCovPitch.Text = $"{covPitch:F2}";
-            TxtCovYaw.Text   = $"{covYaw:F2}";
+            TxtCovRoll.Text  = Pos2(covRoll);
+            TxtCovPitch.Text = Pos2(covPitch);
+            TxtCovYaw.Text   = Pos2(covYaw);
 
-            // 两种异常都用橙红标出：
-            //   ① 三项全 0 ⇒ 固件 0x00C0~0x00C5 被写成/加载成 0 ⇒ ROS2 会直接丢弃姿态
+            // 两种异常都用橙红标出。⚠️ 必须排除预热期 —— 那时三项必然是 0，
+            // 但那是"快照还没发布"，不是"σ 没写"，标红属于误报。
+            //   ① 三项全 0 ⇒ 固件 0x00C0~0x00C5 被写成/加载成 0 ⇒ 协方差无意义
             //      （升级固件后旧 flash 镜像会把编译期默认的 1/1/10 覆盖成 0）
             //   ② 非对角非 0 ⇒ 违反契约，说明地址或字序错位（与传感器无关）
-            bool covBad = (imu.CovRoll <= 0f && imu.CovPitch <= 0f && imu.CovYaw <= 0f)
-                       || (imu.CovOffDiagMax > 1e-6f);
+            bool covBad = !warmup
+                       && ((imu.CovRoll <= 0f && imu.CovPitch <= 0f && imu.CovYaw <= 0f)
+                           || (imu.CovOffDiagMax > 1e-6f));
             var covBrush = covBad ? Brushes.OrangeRed : Brushes.Black;
             TxtCovRoll.Foreground  = covBrush;
             TxtCovPitch.Foreground = covBrush;
@@ -457,13 +522,16 @@ namespace GamepadSpeedController
             // ========== IST8310 磁力计（接口文档.md §6.9）==========
             // 初始化错误码：0=成功，0x40=WHO_AM_I 失败，1~4=第 N 个配置寄存器回读校验失败
             bool magOk = imu.MagInitErr == 0;
-            TxtMagInit.Text = imu.MagInitErr switch
+            // ⚠️ 预热期这一组寄存器也是 0 ⇒ MagInitErr=0 ⇒ magOk "假通过"，显示上必须区分。
+            TxtMagInit.Text = warmup ? "--" : imu.MagInitErr switch
             {
                 0x00 => "OK",
                 0x40 => "0x40 无传感器",
                 _    => $"0x{imu.MagInitErr:X2} 配置失败",
             };
-            TxtMagInit.Foreground = magOk ? Brushes.Green : Brushes.OrangeRed;
+            TxtMagInit.Foreground = warmup
+                ? new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88))
+                : (magOk ? Brushes.Green : Brushes.OrangeRed);
 
             // 按钮高亮由【设备回读】的 MagEnable 派生 —— 打开窗口即同步，不依赖"点过没点过"。
             // 落盘期内禁用按钮，防止连点写出第二次擦除。
@@ -472,10 +540,17 @@ namespace GamepadSpeedController
 
             // ===== I2C 链路诊断（必须在徽标之前跑：徽标要用它给出的"卡死"判据，
             //       才能把以前那个「六轴(降级?)」的问号变成确定结论）=====
-            UpdateMagDiag(imu, magOk);
+            UpdateMagDiag(imu, magOk, warmup);
 
             // 融合状态徽标：九轴（紫）/ 六轴（灰）/ 离线·卡死（红）
-            if (!magOk)
+            // ⚠️ 预热期必须**最先**判：那时 MagInitErr 读回 0 ⇒ magOk 假通过，
+            //    不先拦 warmup 就会一路掉进"九轴融合"/"启动中"的错误分支。
+            if (warmup)
+            {
+                TxtMagState.Text = "预热中";
+                MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0x9E, 0x9E, 0x9E));
+            }
+            else if (!magOk)
             {
                 TxtMagState.Text = "MAG 离线";
                 MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
@@ -509,19 +584,20 @@ namespace GamepadSpeedController
                 MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0x9E, 0x9E, 0x9E));
             }
 
-            TxtMagX.Text = $"{imu.MagX:F1}";
-            TxtMagY.Text = $"{imu.MagY:F1}";
-            TxtMagZ.Text = $"{imu.MagZ:F1}";
+            TxtMagX.Text = Num1(imu.MagX);
+            TxtMagY.Text = Num1(imu.MagY);
+            TxtMagZ.Text = Num1(imu.MagZ);
 
             // 模值合理性：地磁总场约 25~65 μT；未做硬铁校准时偏置会让它偏大，故上界放宽到 150。
             // 作用：在"九轴在跑、但读数明显不对劲"时给出可见信号 —— 这类问题以前完全静默
             //（垃圾/冻结值被喂进 Mahony，yaw 是错的却毫无提示）。
-            TxtMagNorm.Text = $"{imu.MagNorm:F1}";
+            TxtMagNorm.Text = warmup ? "--" : $"{imu.MagNorm:F1}";
             bool normSane = imu.MagNorm >= 15f && imu.MagNorm <= 150f;
-            TxtMagNorm.Foreground = (magOk && !normSane)
+            // ⚠️ 预热期 MagNorm=0 ⇒ normSane=false，而 magOk 又假通过 ⇒ 会误标橙。
+            TxtMagNorm.Foreground = (!warmup && magOk && !normSane)
                 ? Brushes.OrangeRed
                 : new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33));
-            if (magOk && imu.MagActive == 1 && !normSane)
+            if (!warmup && magOk && imu.MagActive == 1 && !normSane)
             {
                 TxtMagState.Text = "九轴(模值异常)";
                 MagStateBadge.Background = new SolidColorBrush(Color.FromRgb(0xF5, 0x7C, 0x00));
@@ -589,7 +665,7 @@ namespace GamepadSpeedController
             var mat = new DiffuseMaterial(new SolidColorBrush(color));
 
             const int Seg = 20;
-            double shaftR = 0.035, headR = 0.09;
+            double shaftR = 0.022, headR = 0.055;
             double shaftLen = length - coneH;
 
             // --- 圆柱杆 ---

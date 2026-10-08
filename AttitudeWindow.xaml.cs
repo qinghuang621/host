@@ -427,6 +427,33 @@ namespace GamepadSpeedController
                 ? $"(w={imu.Qw:F3}, x={imu.Qx:F3}, y={imu.Qy:F3}, z={imu.Qz:F3})"
                 : "( -- )";
 
+            // ========== 运动控制输出区（0x0190~0x01A7，接口文档.md §6.10）==========
+            // 线加速度：机体系**比力**（含重力、固件不减）。静止水平时 ACCEL_Z ≈ +9.8，
+            // 可当"加计通道是否正常"的快速判据（不在 ±9.8 附近就要查）。
+            TxtAccelX.Text = $"{imu.AccelX:F2}";
+            TxtAccelY.Text = $"{imu.AccelY:F2}";
+            TxtAccelZ.Text = $"{imu.AccelZ:F2}";
+
+            // 姿态协方差：固件给的是**方差**（rad²）⇒ 开方回标准差、再转度，
+            // 才好和固件的 σ 设定值（0x00C0~0x00C5，默认 1.0/1.0/10.0 度）直接对照。
+            double covRoll  = Math.Sqrt(Math.Max(0.0, imu.CovRoll))  * 180.0 / Math.PI;
+            double covPitch = Math.Sqrt(Math.Max(0.0, imu.CovPitch)) * 180.0 / Math.PI;
+            double covYaw   = Math.Sqrt(Math.Max(0.0, imu.CovYaw))   * 180.0 / Math.PI;
+            TxtCovRoll.Text  = $"{covRoll:F2}";
+            TxtCovPitch.Text = $"{covPitch:F2}";
+            TxtCovYaw.Text   = $"{covYaw:F2}";
+
+            // 两种异常都用橙红标出：
+            //   ① 三项全 0 ⇒ 固件 0x00C0~0x00C5 被写成/加载成 0 ⇒ ROS2 会直接丢弃姿态
+            //      （升级固件后旧 flash 镜像会把编译期默认的 1/1/10 覆盖成 0）
+            //   ② 非对角非 0 ⇒ 违反契约，说明地址或字序错位（与传感器无关）
+            bool covBad = (imu.CovRoll <= 0f && imu.CovPitch <= 0f && imu.CovYaw <= 0f)
+                       || (imu.CovOffDiagMax > 1e-6f);
+            var covBrush = covBad ? Brushes.OrangeRed : Brushes.Black;
+            TxtCovRoll.Foreground  = covBrush;
+            TxtCovPitch.Foreground = covBrush;
+            TxtCovYaw.Foreground   = covBrush;
+
             // ========== IST8310 磁力计（接口文档.md §6.9）==========
             // 初始化错误码：0=成功，0x40=WHO_AM_I 失败，1~4=第 N 个配置寄存器回读校验失败
             bool magOk = imu.MagInitErr == 0;

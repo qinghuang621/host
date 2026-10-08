@@ -60,13 +60,28 @@ namespace GamepadSpeedController
         private const ushort RegMagI2cEcode = 0x018B;// hi2c3.ErrorCode：0x04=AF(NACK) 0x01=BERR 0x20=TIMEOUT
         private const ushort RegMagRecover = 0x018C; // 【自愈】I2C3 复位次数 = **毛刺发生次数**
 
+        // ========== 运动控制输出区 0x0190~0x01A7（2026-09-30 新增 · 接口文档.md §6.10）==========
+        // 上位机 ROS2 要的四组量里的另两组（角速度 0x0156~、四元数 0x0174~ 已在姿态区）。
+        //   ACCEL_*：机体系**比力**（含重力、固件**不减**）。静止水平时 ACCEL_Z ≈ +9.8 m/s²。
+        //     固件不减重力的理由：ROS2 sensor_msgs/Imu.linear_acceleration 本身就是比力；
+        //     减重力必须依赖姿态，会把姿态误差耦合进加速度。
+        //   ORI_COV：3×3 float32，**行主序**、单位 rad²、顺序 (roll, pitch, yaw)。
+        //     **只有对角三项非 0**，非对角恒 0。对角 = (σ_度 × π/180)²，
+        //     其中 σ 由固件可写寄存器 0x00C0~0x00C5 决定（默认 1.0 / 1.0 / 10.0 度，断电保持）。
+        //     🔴 升级固件后必须先写一次 0x00C0~0x00C5，否则旧镜像里的 0 会被加载 ⇒ 全 0 协方差
+        //        （ROS2 惯例视为"姿态不可信"）。
+        private const ushort RegImuAccelX  = 0x0190; // float32 ×3 → 0x0190 / 0x0192 / 0x0194
+        private const ushort RegImuOriCov  = 0x0196; // float32 ×9 → 0x0196~0x01A7（本工程只用对角）
+
         /// <summary>
-        /// ReadImu() 的单次 FC03 读长：0x014A~0x018C 共 <b>67</b> 只。
-        /// 58 = 0x014A~0x0183（正式区）；+9 = 0x0184~0x018C（临时诊断区，见上）。
+        /// ReadImu() 的单次 FC03 读长：0x014A~0x01A7 共 <b>94</b> 只。
+        /// 58 = 0x014A~0x0183（正式区）；+9 = 0x0184~0x018C（临时诊断区）；
+        /// +18 = 0x0190~0x01A7（运动控制输出区，2026-09-30 新增）。
+        /// ⚠️ 0x018D~0x018F 是三只未分配空洞，夹在中间无法跳过 —— 一并读回、不解析。
         /// 上限核对：固件对 FC03 的规则是 qty &gt; 125 → 异常码 0x03（bsp_modbus.c 已修），
-        /// 67 远低于该限；响应 5+2+134 = 141 B &lt; 固件 256 B 发送缓冲，安全。
+        /// 94 远低于该限；响应 5+2×94 = <b>193 B</b> &lt; 固件 256 B 发送缓冲，安全。
         /// </summary>
-        private const ushort RegImuBlockLen = 67;
+        private const ushort RegImuBlockLen = 94;
 
         // ========== 风机子系统寄存器（接口文档.md §6） ==========
         // 4 路手动占空比（自动模式下只保存不驱动）
@@ -176,6 +191,9 @@ namespace GamepadSpeedController
         ///   0x017D         ( 1 只)  对齐填充，恒 0
         ///   0x017E~0x0183 ( 6 只)  磁力计 MAG_X/Y/Z（3×float32 μT，未校准）
         ///   0x0184~0x018C ( 9 只)  【临时诊断】I2C 链路健康度（见常量区删除清单）
+        ///   0x018D~0x018F ( 3 只)  未分配空洞（夹在中间，一并读回、不解析）
+        ///   0x0190~0x0195 ( 6 只)  线加速度 ACCEL_X/Y/Z（3×float32 m/s²，**比力含重力**）
+        ///   0x0196~0x01A7 (18 只)  姿态协方差 3×3 float32（行主序 rad²，**只取对角**）
         /// 字段口径与固件 components/algorithm/ins_task.h::ins_snapshot_t 及
         /// 接口文档.md §6.4、§6.6、§6.7、§6.8、§6.9 完全一致。
         /// </summary>
@@ -221,7 +239,22 @@ namespace GamepadSpeedController
                 MagI2cState = regs[64],                       // 0x018A
                 MagI2cEcode = regs[65],                       // 0x018B
                 MagRecover  = regs[66],                       // 0x018C
+                // ---- 运动控制输出区（0x0190 起 = 相对偏移 70；0x018D~0x018F 空洞跳过）----
+                AccelX = ReadFloat(regs[70], regs[71]),       // 0x0190
+                AccelY = ReadFloat(regs[72], regs[73]),       // 0x0192
+                AccelZ = ReadFloat(regs[74], regs[75]),       // 0x0194
+                // 协方差行主序 ⇒ 元素 [i] 落在偏移 76+2i；只存对角 [0]/[4]/[8]
+                CovRoll  = ReadFloat(regs[76], regs[77]),     // [0] 0x0196
+                CovPitch = ReadFloat(regs[84], regs[85]),     // [4] 0x019E
+                CovYaw   = ReadFloat(regs[92], regs[93]),     // [8] 0x01A6
             };
+            // 非对角 6 项固件保证恒 0 ⇒ 取 |·| 最大值做**契约自检**
+            //（读到非 0 说明地址/字序错位，而不是传感器问题）
+            imu.CovOffDiagMax = MathF.Max(
+                MathF.Max(MathF.Abs(ReadFloat(regs[78], regs[79])), MathF.Abs(ReadFloat(regs[80], regs[81]))),
+                MathF.Max(MathF.Abs(ReadFloat(regs[82], regs[83])), MathF.Abs(ReadFloat(regs[86], regs[87]))));
+            imu.CovOffDiagMax = MathF.Max(imu.CovOffDiagMax,
+                MathF.Max(MathF.Abs(ReadFloat(regs[88], regs[89])), MathF.Abs(ReadFloat(regs[90], regs[91]))));
             imu.MagNorm = MathF.Sqrt(imu.MagX * imu.MagX
                                    + imu.MagY * imu.MagY
                                    + imu.MagZ * imu.MagZ);
@@ -771,6 +804,16 @@ namespace GamepadSpeedController
         public ushort MagI2cState; // 0x018A: hi2c3.State
         public ushort MagI2cEcode; // 0x018B: hi2c3.ErrorCode
         public ushort MagRecover;  // 0x018C: 【自愈】I2C3 复位次数 = 毛刺发生次数
+
+        // ---- 运动控制输出区（0x0190~0x01A7，2026-09-30 新增 · 接口文档.md §6.10）----
+        public float AccelX;        // m/s², 机体系**比力** X（含重力，固件不减）
+        public float AccelY;        // m/s²
+        public float AccelZ;        // m/s², 静止水平时 ≈ +9.8
+        public float CovRoll;       // rad², 姿态协方差对角 [0]（roll 的**方差**）
+        public float CovPitch;      // rad², 对角 [4]
+        public float CovYaw;        // rad², 对角 [8] —— 未标定前远大于前两项（默认 σ 10° vs 1°）
+        public float CovOffDiagMax; // 非对角 6 项的 |·| 最大值。**契约自检**：固件保证恒 0，
+                                    // 读到非 0 ⇒ 地址/字序错位（不是传感器问题）
     }
 
     /// <summary>

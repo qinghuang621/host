@@ -110,6 +110,45 @@
                 </StackPanel>
                 </Border>
 
+                <!-- ===== 运动控制输出区（2026-09-30 新增 · 接口文档.md §6.10）=====
+                     上位机 ROS2 要的四组量里的另两组：线加速度（比力）+ 姿态协方差。
+                     协方差对角 = (σ×π/180)²，σ 由固件可写寄存器 0x00C0~0x00C5 决定
+                     （默认 1.0/1.0/10.0 度）⇒ 这里**开方回角度**显示更直观。 -->
+                <Border BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Margin="0,6,0,0" Padding="0,5,0,0">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <TextBlock Text="ACCEL" Foreground="#EF6C00" FontWeight="Bold" VerticalAlignment="Center"
+                                       ToolTip="0x0190~0x0195 机体系线加速度 = 比力（含重力、固件不减）。静止水平时 ACCEL_Z ≈ +9.8 m/s²"/>
+                            <TextBlock Text="X" Foreground="#D32F2F" FontWeight="Bold" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                            <TextBlock x:Name="TxtAccelX" Text="--" Foreground="#222222" Margin="4,0,12,0"
+                                       FontSize="13" MinWidth="66"/>
+                            <TextBlock Text="Y" Foreground="#2E7D32" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="TxtAccelY" Text="--" Foreground="#222222" Margin="4,0,12,0"
+                                       FontSize="13" MinWidth="66"/>
+                            <TextBlock Text="Z" Foreground="#1565C0" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="TxtAccelZ" Text="--" Foreground="#222222" Margin="4,0,12,0"
+                                       FontSize="13" MinWidth="66"/>
+                            <TextBlock Text="m/s²（比力，含重力）" Foreground="#888888"
+                                       FontSize="11" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,3,0,0">
+                            <TextBlock Text="COV σ" Foreground="#00838F" FontWeight="Bold" VerticalAlignment="Center"
+                                       ToolTip="0x0196~0x01A7 姿态协方差 3×3（rad²）的对角项开方（deg）。固件非对角恒 0；σ 可现场写 0x00C0~0x00C5"/>
+                            <TextBlock Text="roll" Foreground="#777777" FontSize="11" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                            <TextBlock x:Name="TxtCovRoll" Text="--" Foreground="#222222" Margin="4,0,12,0"
+                                       FontSize="13" MinWidth="56"/>
+                            <TextBlock Text="pitch" Foreground="#777777" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="TxtCovPitch" Text="--" Foreground="#222222" Margin="4,0,12,0"
+                                       FontSize="13" MinWidth="56"/>
+                            <TextBlock Text="yaw" Foreground="#777777" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="TxtCovYaw" Text="--" Foreground="#222222" Margin="4,0,12,0"
+                                       FontSize="13" MinWidth="56"/>
+                            <TextBlock Text="°（对角开方）" Foreground="#888888"
+                                       FontSize="11" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
                 <!-- ===== 【临时诊断 2026-09-23】磁力计 I2C 链路健康度（固件 0x0184~0x018C）=====
                      ⚠️🔴 与固件同名的"临时诊断区"配套。2026-09-30 长老决定：测试期间保留，
                      host 先对齐；**将来固件删除 0x0184~0x018C 时，本块要一起删**

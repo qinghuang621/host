@@ -67,6 +67,11 @@
                                TextAlignment="Right"/>
                     <TextBlock Text="℃" Foreground="#9E9E9E" FontSize="13" VerticalAlignment="Center"
                                Margin="4,0,0,0"/>
+                    <TextBlock Text="时间" Foreground="#444444" FontSize="14" FontWeight="Bold"
+                               VerticalAlignment="Center" Margin="24,0,0,0"/>
+                    <TextBlock x:Name="TxtClock" Text="------- --:--:--" Foreground="#333333" FontSize="16"
+                               FontWeight="Bold" FontFamily="Consolas" VerticalAlignment="Center"
+                               Margin="8,0,0,0"/>
                 </StackPanel>
 
                 <Border BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Height="1" Margin="0,7,0,0"/>

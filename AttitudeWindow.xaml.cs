@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
+using System.Windows.Threading;
 
 namespace GamepadSpeedController
 {
@@ -31,6 +32,11 @@ namespace GamepadSpeedController
         {
             InitializeComponent();
             Loaded += (_, _) => BuildScene();
+
+            // 状态行的本机时钟：独立 1s 节拍，与 IMU 轮询解耦 —— 串口断开时时钟照常走。
+            var clock = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            clock.Tick += (_, _) => TxtClock.Text = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            clock.Start();
         }
 
         // ============= 九轴切换按钮 =============
@@ -223,8 +229,11 @@ namespace GamepadSpeedController
                     double readsSec  = (_magRateWinOk + _magRateWinErr) / sec;
                     double fusionHz  = readsSec * 10.0;   // 每 10 次循环读一次磁
                     TxtMagFusion.Text = $"≈{fusionHz:F0} Hz";
-                    // 额定 1000 Hz。明显偏低即说明节拍被挤掉（机制 A 的指纹），标橙。
-                    TxtMagFusion.Foreground = fusionHz < 900.0
+                    // 额定 ≈1600 Hz（实测 INS 唤醒 ≈1613 Hz，见 ins_task.c 的 INS_FUSION_FREQ_HZ）。
+                    // ⚠️ 2026-10-10 更正：门限原为 900 Hz —— 那是按**已废弃的"额定 1 kHz"**写的，
+                    //    只相当于"掉到 56%"，会漏报 40% 的性能退化。收紧到 1400（≈1620 的 87%）。
+                    //    实测正常范围 1552~1645 Hz（随上位机轮询负载小幅浮动）。
+                    TxtMagFusion.Foreground = fusionHz < 1400.0
                         ? Brushes.OrangeRed
                         : new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32));
                 }

@@ -587,6 +587,33 @@ namespace GamepadSpeedController
 
         // ========== UI 更新 ==========
 
+        /// <summary>
+        /// 达妙 DM 电机状态码 → 可读文字 + 颜色（接口文档.md §6.1「电机状态区」）。
+        ///
+        /// ⚠️🔴 **0=失能、1=使能 —— 1 才是正常。**
+        /// 2026-10-10 修正：原实现写的 `s.Err == 0 ? "OK" : $"ERR={s.Err}"` **方向正好反了** ——
+        /// 把「失能」显示成绿色 OK、把「使能（正常）」显示成红色 ERR=1。
+        /// 固件侧是正确的（bsp_modbus.c 的 motor_status_update_from_can 已把
+        /// data[0] 高 4 位的错误码与低 4 位的电机 ID 分离后才写入 0x0064+n*10）。
+        ///
+        /// 颜色分三档：0x1=绿（正常）／0x0=灰（中性，"失能"不是故障）／其余=红（故障）。
+        /// </summary>
+        private static (string Text, Brush Color) MotorStatus(ushort code) => code switch
+        {
+            0x0 => ("失能",      Brushes.Gray),
+            0x1 => ("OK",        Brushes.Green),
+            0x5 => ("传感器错误", Brushes.Red),
+            0x6 => ("参数错误",   Brushes.Red),
+            0x8 => ("过压",      Brushes.Red),
+            0x9 => ("欠压",      Brushes.Red),
+            0xA => ("过流",      Brushes.Red),
+            0xB => ("MOS 过温",  Brushes.Red),
+            0xC => ("线圈过温",   Brushes.Red),
+            0xD => ("通讯丢失",   Brushes.Red),
+            0xE => ("过载",      Brushes.Red),
+            _   => ($"未知(0x{code:X})", Brushes.Red),
+        };
+
         private void UpdateMonitorDisplay(float[] cmdVel, MotorState[] states)
         {
             // 更新手动页 + 手柄页两组表格
@@ -604,12 +631,10 @@ namespace GamepadSpeedController
             for (int i = 0; i < 4 && i < states.Length; i++)
             {
                 var s = states[i];
-                string errText = s.Err == 0 ? "OK" : $"ERR={s.Err}";
-                var errColor = s.Err == 0
-                    ? System.Windows.Media.Brushes.Green
-                    : System.Windows.Media.Brushes.Red;
+                // 状态码 → 文字/颜色（0=失能、1=使能；见 MotorStatus 注释）
+                var (errText, errColor) = MotorStatus(s.Err);
                 string velText = s.Vel.ToString("F2");
-                string tempText = $"{s.TempMos}";
+                string tempText = $"{s.TempMos}℃";
 
                 // 手动页
                 var (e1, v1, t1) = i switch

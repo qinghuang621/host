@@ -94,7 +94,7 @@
                             <TextBlock Grid.Row="0" Grid.Column="3" Text="3(RR)" HorizontalAlignment="Center" Foreground="Gray" FontWeight="Bold"/>
                             <TextBlock Grid.Row="0" Grid.Column="4" Text="4(LR)" HorizontalAlignment="Center" Foreground="Gray" FontWeight="Bold"/>
 
-                            <TextBlock Grid.Row="1" Grid.Column="0" Text="ERR"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="状态"/>
                             <TextBlock Grid.Row="1" Grid.Column="1" x:Name="TxtErr1" HorizontalAlignment="Center"/>
                             <TextBlock Grid.Row="1" Grid.Column="2" x:Name="TxtErr2" HorizontalAlignment="Center"/>
                             <TextBlock Grid.Row="1" Grid.Column="3" x:Name="TxtErr3" HorizontalAlignment="Center"/>
@@ -112,7 +112,7 @@
                             <TextBlock Grid.Row="3" Grid.Column="3" x:Name="TxtActVel3" HorizontalAlignment="Center"/>
                             <TextBlock Grid.Row="3" Grid.Column="4" x:Name="TxtActVel4" HorizontalAlignment="Center"/>
 
-                            <TextBlock Grid.Row="4" Grid.Column="0" Text="温度℃"/>
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="温度"/>
                             <TextBlock Grid.Row="4" Grid.Column="1" x:Name="TxtTemp1" HorizontalAlignment="Center"/>
                             <TextBlock Grid.Row="4" Grid.Column="2" x:Name="TxtTemp2" HorizontalAlignment="Center"/>
                             <TextBlock Grid.Row="4" Grid.Column="3" x:Name="TxtTemp3" HorizontalAlignment="Center"/>
@@ -209,7 +209,7 @@
                             <TextBlock Grid.Row="0" Grid.Column="3" Text="3(RR)" HorizontalAlignment="Center" Foreground="Gray" FontWeight="Bold"/>
                             <TextBlock Grid.Row="0" Grid.Column="4" Text="4(LR)" HorizontalAlignment="Center" Foreground="Gray" FontWeight="Bold"/>
 
-                            <TextBlock Grid.Row="1" Grid.Column="0" Text="ERR"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="状态"/>
                             <TextBlock Grid.Row="1" Grid.Column="1" x:Name="TxtPadErr1" HorizontalAlignment="Center"/>
                             <TextBlock Grid.Row="1" Grid.Column="2" x:Name="TxtPadErr2" HorizontalAlignment="Center"/>
                             <TextBlock Grid.Row="1" Grid.Column="3" x:Name="TxtPadErr3" HorizontalAlignment="Center"/>
@@ -227,7 +227,7 @@
                             <TextBlock Grid.Row="3" Grid.Column="3" x:Name="TxtPadActVel3" HorizontalAlignment="Center"/>
                             <TextBlock Grid.Row="3" Grid.Column="4" x:Name="TxtPadActVel4" HorizontalAlignment="Center"/>
 
-                            <TextBlock Grid.Row="4" Grid.Column="0" Text="温度℃"/>
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="温度"/>
                             <TextBlock Grid.Row="4" Grid.Column="1" x:Name="TxtPadTemp1" HorizontalAlignment="Center"/>
                             <TextBlock Grid.Row="4" Grid.Column="2" x:Name="TxtPadTemp2" HorizontalAlignment="Center"/>
                             <TextBlock Grid.Row="4" Grid.Column="3" x:Name="TxtPadTemp3" HorizontalAlignment="Center"/>

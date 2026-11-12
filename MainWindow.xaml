@@ -14,7 +14,8 @@
 
         <!-- 串口 -->
         <GroupBox Grid.Row="0" Header="串口" Margin="0,0,0,6">
-            <StackPanel Orientation="Horizontal" Margin="8">
+            <!-- WrapPanel：按钮多了以后窄窗口会自动换行，不会把右边的按钮挤没 -->
+            <WrapPanel Orientation="Horizontal" Margin="8">
                 <TextBlock Text="端口:" VerticalAlignment="Center" Margin="0,0,4,0"/>
                 <ComboBox x:Name="CbPort" Width="100"/>
                 <TextBlock Text="波特率:" VerticalAlignment="Center" Margin="12,0,4,0"/>
@@ -29,7 +30,10 @@
                 <Button x:Name="BtnGps" Content="GPS 定位" Width="84" Margin="8,0,0,0"
                         Click="BtnGps_Click" Background="LightSteelBlue"
                         ToolTip="打开 GPS（NEO-6M/M8N）定位数据窗口"/>
-            </StackPanel>
+                <Button x:Name="BtnAds" Content="负压传感" Width="84" Margin="8,0,0,0"
+                        Click="BtnAds_Click" Background="LightSteelBlue"
+                        ToolTip="打开 ADS1256 采集卡窗口（0x01A8 只读区：4 路电压/原始码/压力曲线）"/>
+            </WrapPanel>
         </GroupBox>
 
         <!-- 使能控制 -->
@@ -256,6 +260,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
@@ -323,8 +328,32 @@
                         </StackPanel>
                     </GroupBox>
 
-                    <!-- Row 3: 四风机面板（UniformGrid 4 列，每列卡片式布局） -->
-                    <GroupBox Grid.Row="3" Header="四路风机（目标 / 实际占空比 / 脉冲 / 转速反馈）">
+                    <!-- Row 3: 数据记录（点一次 = 给每个勾选的风机各追加一行 CSV） -->
+                    <GroupBox Grid.Row="3" Header="数据记录（每路一个 CSV，写在程序所在目录）" Margin="0,0,0,4">
+                        <StackPanel Orientation="Horizontal" Margin="8">
+                            <TextBlock Text="拉力(N):" VerticalAlignment="Center"/>
+                            <TextBox x:Name="TxtRecNote" Width="110" Height="24" Margin="4,0,14,0"
+                                     VerticalContentAlignment="Center"
+                                     ToolTip="手动记录拉力机读数，单位 N；未测可留空"/>
+                            <CheckBox x:Name="CkRec1" Content="风机1" IsChecked="True"
+                                      VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <CheckBox x:Name="CkRec2" Content="风机2"
+                                      VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <CheckBox x:Name="CkRec3" Content="风机3"
+                                      VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <CheckBox x:Name="CkRec4" Content="风机4"
+                                      VerticalAlignment="Center" Margin="0,0,18,0"/>
+                            <Button x:Name="BtnRecNow" Content="● 记录当前" Width="110" Height="28"
+                                    Click="BtnRecNow_Click" Background="#FFE8F5E9" FontWeight="Bold"/>
+                            <Button x:Name="BtnRecOpen" Content="打开文件夹" Width="96" Height="28"
+                                    Margin="8,0,0,0" Click="BtnRecOpen_Click"/>
+                            <TextBlock x:Name="TxtRecStatus" Text="就绪" Foreground="Gray"
+                                       VerticalAlignment="Center" Margin="16,0,0,0" FontFamily="Consolas"/>
+                        </StackPanel>
+                    </GroupBox>
+
+                    <!-- Row 4: 四风机面板（UniformGrid 4 列，每列卡片式布局） -->
+                    <GroupBox Grid.Row="4" Header="四路风机（目标 / 实际占空比 / 脉冲 / 转速反馈）">
                         <UniformGrid Columns="4" Rows="1" Margin="4">
                             <!-- 风机 1 -->
                             <Border BorderBrush="#BBBBBB" BorderThickness="1" CornerRadius="6" Margin="0,2,4,2" Padding="8,6" Background="#FAFAFA">
@@ -536,8 +565,8 @@
         </TabControl>
 
         <!-- 底部说明 -->
-        <TextBlock Grid.Row="3" Foreground="Gray" FontSize="11" Margin="0,4,0,0">
-            手动页：填vx/vy/wz → 勾"持续发送" → 发送  |  手柄页：勾"启用手柄" → 推摇杆即可控制  |  风机页：复用主串口 _mb → 一键检查 → 选模式 → 调占空比
+        <TextBlock Grid.Row="3" Foreground="Gray" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap">
+            手动页：填vx/vy/wz → 勾"持续发送" → 发送  |  手柄页：勾"启用手柄" → 推摇杆即可控制  |  风机页：复用主串口 _mb → 一键检查 → 选模式 → 调占空比  |  负压页：ADS1256 四路电压/原始码/趋势
         </TextBlock>
     </Grid>
 </Window>

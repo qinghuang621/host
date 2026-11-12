@@ -42,23 +42,17 @@ namespace GamepadSpeedController
         //（400kHz 下随机毛刺 → 外设卡 BUSY 且不自愈 → MAG_OK 冻结、喂冻结向量给 Mahony）。
         // 本段就是它的判读窗口，判读表见固件 bsp_modbus.c 的 REG_MAG_RAW_X 上方注释。
         //
-        // ⚠️🔴 固件侧同一段标着「【临时诊断】…定位完整段删除」。2026-09-30 长老决定：
-        //   **测试期间保留，host 先对齐；以后测试完一起删。**
-        //   ⇒ 将来固件删这一段时，host 要**同步删除**以下四处（缺一处即编译失败或脏读）：
-        //     1) 本组 9 个常量 + RegImuBlockLen
-        //     2) ReadImu() 里 "【临时诊断】" 那段解析，读长从 RegImuBlockLen 收回 58
-        //     3) ImuData 的 MagRawX/Y/Z、MagErrCnt/MagOkCnt、MagHal/MagI2cState/MagI2cEcode、MagRecover
-        //     4) AttitudeWindow.xaml 的 I2C 诊断块（GlitchLamp/TxtGlitch/…）+
-        //        AttitudeWindow.xaml.cs 的 UpdateMagDiag() 与其字段
-        private const ushort RegMagRawX    = 0x0184; // int16 原始计数（不乘 0.3）
-        private const ushort RegMagRawY    = 0x0185;
-        private const ushort RegMagRawZ    = 0x0186;
-        private const ushort RegMagErrCnt  = 0x0187; // uint16：I2C 读失败累计
-        private const ushort RegMagOkCnt   = 0x0188; // uint16：I2C 读成功累计（不涨 = 卡死）
-        private const ushort RegMagHal     = 0x0189; // 最后一次 HAL 返回码：0=OK 1=ERROR 2=BUSY 3=TIMEOUT
-        private const ushort RegMagI2cState = 0x018A;// hi2c3.State：0x20=READY 0x24=BUSY 0xA0=TIMEOUT 0xE0=ERROR
-        private const ushort RegMagI2cEcode = 0x018B;// hi2c3.ErrorCode：0x04=AF(NACK) 0x01=BERR 0x20=TIMEOUT
-        private const ushort RegMagRecover = 0x018C; // 【自愈】I2C3 复位次数 = **毛刺发生次数**
+        // 🔴 2026-11-12：固件已按原计划删除【磁力计临时诊断区 0x0184~0x018C】
+        //   （固件提交 cbc867a "refactor: 清理死代码（USART3 / 风机状态机 / 磁诊断区）"），
+        //   本节 9 个常量与 ImuData 的 9 个诊断字段**已同步删除**。
+        //   0x0184~0x018F 现在是**保留空洞**（读回来恒 0），窗口必须读回来但不能解析，
+        //   因为 0x0190 起的运动控制区还在这块读窗里。
+        //
+        //   ⚠️ 别再按"MAG_OK 不涨"判卡死 —— 它恒 0，会永久误报「六轴(I2C 卡死)」。
+        //      现行判据见 AttitudeWindow.xaml.cs::UpdateMagDiag()，只用固件仍在维护的：
+        //        · 0x014B MAG_STATUS（固件侧三条件：present && enable && fail_streak<3）
+        //        · 0x017C MAG_INIT_ERR
+        //        · 0x017E~0x0183 MAG_X/Y/Z（补 / 补"读数冻结"盲区）
 
         // ========== 运动控制输出区 0x0190~0x01A7（2026-09-30 新增 · 接口文档.md §6.10）==========
         // 上位机 ROS2 要的四组量里的另两组（角速度 0x0156~、四元数 0x0174~ 已在姿态区）。
@@ -82,6 +76,20 @@ namespace GamepadSpeedController
         /// 94 远低于该限；响应 5+2×94 = <b>193 B</b> &lt; 固件 256 B 发送缓冲，安全。
         /// </summary>
         private const ushort RegImuBlockLen = 94;
+
+        // ========== ADS1256 负压采集输出区 0x01A8~0x01C3（只读 · 接口文档.md §6.11）==========
+        // 由固件 AdcTask 更新（SPI2 四路轮流采样，约 12~16 ms/轮）；写这些地址固件**静默忽略**。
+        // 28 只布局（相对偏移）：
+        //    0  ADS_STATUS   uint16   0=正常 1=DRDY 超时 2=初始化失败 3=SPI 错误
+        //    1  ADS_SCAN_SEQ uint16   每次成功扫描 +1；**故障时停住**
+        //    2  V0~V3        float32×4 → 偏移 2/4/6/8，单位 V（固件已按 V=code×5/8388608 换算）
+        //   10  RAW0~RAW3    int32 ×4 → 偏移 10/12/14/16，24bit 符号扩展后的原始码
+        //   18  V_5V         float32  预留，当前恒 0
+        //   20  P0~P3        float32×4 → 偏移 20/22/24/26，预留恒 0（压力换算放上位机做）
+        // 🔴 判据铁律：ADS_STATUS≠0 时 SEQ 停住、V0~V3 **保持最后一次成功值** ——
+        //    不能只看电压为 0 就认为负压为 0（AdsWindow 里做了"SEQ 停住"检测）。
+        private const ushort RegAdsBase     = 0x01A8;
+        private const ushort RegAdsBlockLen = 28;
 
         // ========== 风机子系统寄存器（接口文档.md §6） ==========
         // 4 路手动占空比（自动模式下只保存不驱动）
@@ -179,8 +187,8 @@ namespace GamepadSpeedController
         }
 
         /// <summary>
-        /// 读 IMU 姿态块 + 实时 θ + 姿态四元数 + IST8310 磁力计诊断。
-        /// 一条 FC03 读 0x014A 起 <see cref="RegImuBlockLen"/> 只（0x014A~0x018C），各段布局：
+        /// 读 IMU 姿态块 + 实时 θ + 姿态四元数 + 运动控制输出区。
+        /// 一条 FC03 读 0x014A 起 <see cref="RegImuBlockLen"/> 只（0x014A~0x01A7），各段布局：
         ///   0x014A~0x014F ( 6 只起) 磁力计使能/状态（前 3 只）+ 风机参数尾部（跳过）
         ///   0x0150~0x015F (16 只)  IMU 姿态 + 温度
         ///   0x0160~0x016D (14 只)  LUT 表 + 魔数（只读无害，直接跳过）
@@ -190,12 +198,12 @@ namespace GamepadSpeedController
         ///   0x017C         ( 1 只)  磁力计初始化错误码
         ///   0x017D         ( 1 只)  对齐填充，恒 0
         ///   0x017E~0x0183 ( 6 只)  磁力计 MAG_X/Y/Z（3×float32 μT，未校准）
-        ///   0x0184~0x018C ( 9 只)  【临时诊断】I2C 链路健康度（见常量区删除清单）
-        ///   0x018D~0x018F ( 3 只)  未分配空洞（夹在中间，一并读回、不解析）
+        ///   0x0184~0x018F (12 只)  **保留空洞**（原磁诊断区 + 未分配，一并读回、不解析）
         ///   0x0190~0x0195 ( 6 只)  线加速度 ACCEL_X/Y/Z（3×float32 m/s²，**比力含重力**）
         ///   0x0196~0x01A7 (18 只)  姿态协方差 3×3 float32（行主序 rad²，**只取对角**）
         /// 字段口径与固件 components/algorithm/ins_task.h::ins_snapshot_t 及
         /// 接口文档.md §6.4、§6.6、§6.7、§6.8、§6.9 完全一致。
+        /// ⚠️ 0x0184~0x018F 必须读回来（中间有空洞会把 0x0190 之后的偏移全算错），但不解析。
         /// </summary>
         public ImuData ReadImu()
         {
@@ -228,18 +236,9 @@ namespace GamepadSpeedController
                 MagX = ReadFloat(regs[52], regs[53]),         // 0x017E
                 MagY = ReadFloat(regs[54], regs[55]),         // 0x0180
                 MagZ = ReadFloat(regs[56], regs[57]),         // 0x0182
-                // ---- 【临时诊断】I2C 链路健康度（0x0184 起，相对偏移 58）----
-                // 0x0184~0x0186 夹在读窗口中间，无法跳过，一并解析（int16 需按有符号还原）
-                MagRawX     = (short)regs[58],                // 0x0184
-                MagRawY     = (short)regs[59],                // 0x0185
-                MagRawZ     = (short)regs[60],                // 0x0186
-                MagErrCnt   = regs[61],                       // 0x0187
-                MagOkCnt    = regs[62],                       // 0x0188
-                MagHal      = regs[63],                       // 0x0189
-                MagI2cState = regs[64],                       // 0x018A
-                MagI2cEcode = regs[65],                       // 0x018B
-                MagRecover  = regs[66],                       // 0x018C
-                // ---- 运动控制输出区（0x0190 起 = 相对偏移 70；0x018D~0x018F 空洞跳过）----
+                // ---- 0x0184~0x018F 是保留空洞（原磁诊断区，固件已删）----
+                // 夹在读窗口中间**必须读回来**（否则 0x0190 之后的偏移全错），但**不解析**。
+                // ---- 运动控制输出区（0x0190 起 = 相对偏移 70）----
                 AccelX = ReadFloat(regs[70], regs[71]),       // 0x0190
                 AccelY = ReadFloat(regs[72], regs[73]),       // 0x0192
                 AccelZ = ReadFloat(regs[74], regs[75]),       // 0x0194
@@ -259,6 +258,41 @@ namespace GamepadSpeedController
                                    + imu.MagY * imu.MagY
                                    + imu.MagZ * imu.MagZ);
             return imu;
+        }
+
+        // ========== ADS1256 负压采集（0x01A8 起 28 只，一条 FC03） ==========
+
+        /// <summary>
+        /// 读 ADS1256 采集卡输出区（接口文档.md §6.11）。
+        /// 响应 5+2×28 = 61 B，115200 下约 5.3 ms —— 与风机(48 只)/IMU(94 只) 错峰即可。
+        /// 电压由固件换算好（ACOM=0V 单端、BUFEN=0、0~5V 量程），本方法只负责拆包：
+        /// 同时带回**原始码**，是为了区分"量程/接线问题"和"换算问题"
+        /// （例：V=0 且 RAW=0 → 真的短地；V=0 且 RAW=0xFFFFFF → 负向饱和）。
+        /// </summary>
+        public AdsSnapshot ReadAds()
+        {
+            // verbose:false —— 这是 5Hz 周期轮询，逐帧 hex dump 会把主窗口日志刷没；
+            // 失败仍抛异常，由调用方记一行 "ADS read error"。
+            ushort[] r = ReadHoldingRegisters(RegAdsBase, RegAdsBlockLen, verbose: false);
+
+            var ads = new AdsSnapshot
+            {
+                Status = r[0],
+                Seq    = r[1],
+                // 结构体默认数组引用为 null，这里显式分配（调用方可以放心按 4 路取）
+                Volts  = new float[4],
+                Raw    = new int[4],
+                Press  = new float[4],
+                V5     = ReadFloat(r[18], r[19]),
+            };
+            for (int i = 0; i < 4; i++)
+            {
+                ads.Volts[i] = ReadFloat(r[2 + i * 2], r[3 + i * 2]);   // 0x01AA + 2i
+                // int32 高字在前 → 先拼成 uint32 再按有符号解释
+                ads.Raw[i]   = (int)((uint)((r[10 + i * 2] << 16) | r[11 + i * 2]));
+                ads.Press[i] = ReadFloat(r[20 + i * 2], r[21 + i * 2]); // 0x01BC + 2i（固件预留恒 0）
+            }
+            return ads;
         }
 
         // ========== 风机子系统：4 路 + LUT 模式前置条件 ==========
@@ -445,20 +479,27 @@ namespace GamepadSpeedController
 
         // ========== 核心通信：对齐 Modbus Poll 的最简实现 ==========
 
-        private ushort[] ReadHoldingRegisters(ushort startAddr, ushort count)
+        /// <summary>
+        /// 读保持寄存器。verbose=false 时不打印逐帧诊断（hex dump / chunk 时间戳）——
+        /// 只给**周期性轮询**用（如 5Hz 的 ADS1256 读），失败仍会抛异常由调用方记一行日志；
+        /// 默认 true 保持原有排障输出不变。
+        /// </summary>
+        private ushort[] ReadHoldingRegisters(ushort startAddr, ushort count, bool verbose = true)
         {
             lock (_lock)
             {
                 byte[] req = BuildReadRequest(startAddr, count);
                 int expectedLen = 3 + count * 2 + 2;
-                byte[] resp = SendAndReceive(req, expectedLen);
+                byte[] resp = SendAndReceive(req, expectedLen, verbose);
                 if (resp == null)
                 {
-                    Log($"  READ FAIL: null response (addr={startAddr}, count={count})");
+                    if (verbose)
+                        Log($"  READ FAIL: null response (addr={startAddr}, count={count})");
                     throw new TimeoutException($"读超时: addr={startAddr} count={count}");
                 }
 
-                Log($"  READ: addr={startAddr}, count={count}, respLen={resp.Length}");
+                if (verbose)
+                    Log($"  READ: addr={startAddr}, count={count}, respLen={resp.Length}");
 
                 if (resp[0] != SlaveId || resp[1] != 0x03)
                 {
@@ -490,7 +531,7 @@ namespace GamepadSpeedController
                     result[i] = (ushort)(resp[3 + 2 * i] << 8 | resp[3 + 2 * i + 1]);
 
                 // 打印寄存器和 float 值用于调试
-                if (count >= 4)
+                if (verbose && count >= 4)
                 {
                     Log($"  READ DATA: [{result[0]}, {result[1]}, {result[2]}, {result[3]}, ...]");
                     // 同时尝试解析 float
@@ -553,7 +594,7 @@ namespace GamepadSpeedController
         ///   - 数据被踩坏：所有字节按正常节奏到达，但 hex dump 显示内容异常/CRC 错
         /// ReadAvailable 内部 500ms 总超时已涵盖"等首字节+传输"全流程。
         /// </summary>
-        private byte[] SendAndReceive(byte[] req, int expectedLen)
+        private byte[] SendAndReceive(byte[] req, int expectedLen, bool verbose = true)
         {
             // 1. 清空输入缓冲
             _port.DiscardInBuffer();
@@ -562,15 +603,18 @@ namespace GamepadSpeedController
             _port.Write(req, 0, req.Length);
 
             // 3. 立即开始读响应（ReadAvailable 内部 500ms 总超时）
-            byte[] rx = ReadAvailable(expectedLen);
+            byte[] rx = ReadAvailable(expectedLen, verbose);
 
             // 4. 读完全部响应后，丢弃可能残留的回声/垃圾字节
             try { _port.DiscardInBuffer(); } catch { }
 
-            if (rx == null)
-                Log($"TIMEOUT: expected {expectedLen} bytes, got 0");
-            else
-                Log($"OK: {req.Length}→{rx.Length} bytes");
+            if (verbose)
+            {
+                if (rx == null)
+                    Log($"TIMEOUT: expected {expectedLen} bytes, got 0");
+                else
+                    Log($"OK: {req.Length}→{rx.Length} bytes");
+            }
 
             return rx;
         }
@@ -585,7 +629,7 @@ namespace GamepadSpeedController
         ///   - 失败时打印最后字节到达时间和后续静默时长
         ///   - 完整 hex dump 用于人工核对帧内容
         /// </summary>
-        private byte[] ReadAvailable(int expectedLen)
+        private byte[] ReadAvailable(int expectedLen, bool verbose = true)
         {
             var ms = new MemoryStream();
             var sw = Stopwatch.StartNew();
@@ -617,9 +661,12 @@ namespace GamepadSpeedController
                     lastByteMs = nowMs;
                     chunkCount++;
 
-                    chunksLog.Append($"[chunk#{chunkCount} t={nowMs}ms off={ms.Length - n}..{ms.Length} len={n}] ");
-                    chunksLog.Append(BitConverter.ToString(buf, 0, n));
-                    chunksLog.Append('\n');
+                    if (verbose)
+                    {
+                        chunksLog.Append($"[chunk#{chunkCount} t={nowMs}ms off={ms.Length - n}..{ms.Length} len={n}] ");
+                        chunksLog.Append(BitConverter.ToString(buf, 0, n));
+                        chunksLog.Append('\n');
+                    }
                 }
 
                 if (ms.Length >= expectedLen) break;
@@ -636,26 +683,29 @@ namespace GamepadSpeedController
             bool isShort = all.Length < expectedLen;
 
             // ---- 诊断输出 ----
-            Log($"--- ReadAvailable: expected={expectedLen} got={all.Length} " +
-                $"time={totalMs}ms chunks={chunkCount} firstByteAt={firstByteMs}ms " +
-                $"lastByteAt={lastByteMs}ms maxGap={maxGapMs}ms ---");
-
-            if (chunksLog.Length > 0)
-                Log(chunksLog.ToString());
-
-            Log("[Full hex] " + BitConverter.ToString(all));
-
-            if (isShort)
+            if (verbose)
             {
-                Log($"  TIMEOUT: got {all.Length}/{expectedLen} bytes, " +
-                    $"last byte at t={lastByteMs}ms, " +
-                    $"then {(totalMs - lastByteMs)}ms silence — " +
-                    $"(固件停发？还是 USB 缓冲未刷新？看 maxGap 和 silence 比例)");
-            }
-            else if (maxGapMs > 20)
-            {
-                // 收齐了但中间有大缝——可能是 USB 批量传输抖动，也可能固件中段停顿
-                Log($"  WARN: maxGap={maxGapMs}ms (>20ms) — 传输过程中有停顿，但最终收齐");
+                Log($"--- ReadAvailable: expected={expectedLen} got={all.Length} " +
+                    $"time={totalMs}ms chunks={chunkCount} firstByteAt={firstByteMs}ms " +
+                    $"lastByteAt={lastByteMs}ms maxGap={maxGapMs}ms ---");
+
+                if (chunksLog.Length > 0)
+                    Log(chunksLog.ToString());
+
+                Log("[Full hex] " + BitConverter.ToString(all));
+
+                if (isShort)
+                {
+                    Log($"  TIMEOUT: got {all.Length}/{expectedLen} bytes, " +
+                        $"last byte at t={lastByteMs}ms, " +
+                        $"then {(totalMs - lastByteMs)}ms silence — " +
+                        $"(固件停发？还是 USB 缓冲未刷新？看 maxGap 和 silence 比例)");
+                }
+                else if (maxGapMs > 20)
+                {
+                    // 收齐了但中间有大缝——可能是 USB 批量传输抖动，也可能固件中段停顿
+                    Log($"  WARN: maxGap={maxGapMs}ms (>20ms) — 传输过程中有停顿，但最终收齐");
+                }
             }
 
             return all.Length > 0 ? all : null;
@@ -759,8 +809,9 @@ namespace GamepadSpeedController
     /// 四元数 (Qw, Qx, Qy, Qz) 为 body→earth，已归一化；当 ‖q‖≈0 时应回退用欧拉角。
     /// 磁力计字段（2026-09-23 新增，接口文档.md §6.9）：MagX/Y/Z 为未校准原始磁场 μT，
     /// MagNorm 为本机算出的三轴模值（校准时观察其在各姿态下是否恒定）。
-    /// 末尾 MagRawX…MagRecover 来自固件【临时诊断】区 0x0184~0x018C，该段在固件侧
-    /// 标记为"定位完删除"——届时这些字段要**同步删除**（清单见 ModbusClient 常量区）。
+    /// ⚠️ 2026-11-12：原【临时诊断】区 MagRawX…MagRecover（0x0184~0x018C）已随固件
+    /// 提交 cbc867a 一并删除。健康判据改用 MagActive + MagInitErr + MagX/Y/Z 是否变化，
+    /// 见 AttitudeWindow.UpdateMagDiag()。
     /// </summary>
     public struct ImuData
     {
@@ -787,24 +838,6 @@ namespace GamepadSpeedController
         public float MagZ;        // μT, Z 轴
         public float MagNorm;     // μT, √(x²+y²+z²)，本机计算
 
-        // ---- 【临时诊断】I2C 链路健康度（0x0184~0x018C，固件侧同段"定位完删除"）----
-        // 判读要点（与固件 bsp_modbus.c 注释一致）：
-        //   MagOkCnt 不涨          → 卡死/读不到（**判定"降级"的唯一硬证据**）
-        //   MagErrCnt 涨 + HAL=BUSY→ 上一次传输没结束，状态机卡住
-        //   MagErrCnt 涨 + ECODE 0x04 → 从机 NACK(AF)，器件/上拉/时序
-        //   MagErrCnt 涨 + ECODE 0x01 → BERR，总线噪声（上拉太弱/线太长）
-        //   MagErrCnt 涨 + ECODE 0x20 → 超时（从机拉死总线）
-        //   MagRecover 涨          → 【自愈】生效过：毛刺确实发生，但被自动救回
-        public short  MagRawX;     // 0x0184: int16 原始计数（×0.3 即 MagX）
-        public short  MagRawY;     // 0x0185
-        public short  MagRawZ;     // 0x0186
-        public ushort MagErrCnt;   // 0x0187: I2C 读失败累计
-        public ushort MagOkCnt;    // 0x0188: I2C 读成功累计
-        public ushort MagHal;      // 0x0189: 0=OK 1=ERROR 2=BUSY 3=TIMEOUT
-        public ushort MagI2cState; // 0x018A: hi2c3.State
-        public ushort MagI2cEcode; // 0x018B: hi2c3.ErrorCode
-        public ushort MagRecover;  // 0x018C: 【自愈】I2C3 复位次数 = 毛刺发生次数
-
         // ---- 运动控制输出区（0x0190~0x01A7，2026-09-30 新增 · 接口文档.md §6.10）----
         public float AccelX;        // m/s², 机体系**比力** X（含重力，固件不减）
         public float AccelY;        // m/s²
@@ -814,6 +847,23 @@ namespace GamepadSpeedController
         public float CovYaw;        // rad², 对角 [8] —— 未标定前远大于前两项（默认 σ 10° vs 1°）
         public float CovOffDiagMax; // 非对角 6 项的 |·| 最大值。**契约自检**：固件保证恒 0，
                                     // 读到非 0 ⇒ 地址/字序错位（不是传感器问题）
+    }
+
+    /// <summary>
+    /// ADS1256 采集卡快照（接口文档.md §6.11，0x01A8~0x01C3，只读）。
+    /// 下标 0~3 对应 **AIN0~AIN3**；四路是**单 ADC 轮流切换采样**，不是同步采样
+    /// （1kSPS + 丢弃切换后第一拍 ⇒ 每通道约 60~80 Hz）。
+    /// ⚠️ Status≠0 时 Volts/Raw 是**最后一次成功值**，SEQ 不再递增 —— 判断"没数据"要看 SEQ，
+    ///    不能看电压是否为 0。
+    /// </summary>
+    public struct AdsSnapshot
+    {
+        public ushort  Status;      // 0=正常 1=DRDY 超时 2=初始化失败 3=SPI 错误
+        public ushort  Seq;         // 成功扫描计数，故障时停住
+        public float[] Volts;       // V，AIN0~AIN3（固件换算：code×5/8388608，不加 2.5）
+        public int[]   Raw;         // 24bit 符号扩展后的原始码；负向饱和=0x800000
+        public float   V5;          // 5V 母线监测（预留，当前恒 0）
+        public float[] Press;       // 工程量 P0~P3（固件预留，当前恒 0；换算在上位机做）
     }
 
     /// <summary>

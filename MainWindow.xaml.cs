@@ -1,9 +1,14 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.IO.Ports;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using SharpDX.XInput;
 
@@ -28,6 +33,9 @@ namespace GamepadSpeedController
 
         // GPS 定位窗口（按需打开；关闭后置 null）
         private GpsWindow? _gpsWindow;
+
+        // 负压传感窗口（ADS1256；数据由 CommLoop 推送，窗口本身不开线程）
+        private AdsWindow? _adsWindow;
 
         // 速度命令源（UI 线程写入，通信线程读取）
         private float _cmdVx, _cmdVy, _cmdWz;
@@ -342,6 +350,23 @@ namespace GamepadSpeedController
             }
         }
 
+        // ========== 负压传感窗口（ADS1256） ==========
+
+        private void BtnAds_Click(object sender, RoutedEventArgs e)
+        {
+            if (_adsWindow == null || !_adsWindow.IsLoaded)
+            {
+                // 只读传感器页面，不参与电机控制；数据由 CommLoop 每 200ms 推送
+                _adsWindow = new AdsWindow { Owner = this };
+                _adsWindow.Closed += (_, _) => _adsWindow = null;
+                _adsWindow.Show();
+            }
+            else
+            {
+                _adsWindow.Activate();
+            }
+        }
+
         // ========== IElrsHost 实现（供 ElrsWindow 调用） ==========
 
         public bool IsModbusConnected => _connected;
@@ -506,6 +531,25 @@ namespace GamepadSpeedController
                     {
                         if (_attitudeWindow?.MagCommitBusy != true)   // 落盘期超时属预期
                             OnDebugLog($"Fan read error: {ex.Message}");
+                    }
+                }
+
+                // ---- 5. 负压采集：ADS1256 输出区 0x01A8 起 28 只（61B ≈ 5.3ms）----
+                // 放在**奇数 tick**（≈200ms）：风机读在偶数 tick，正好错开 100ms，避免两条大帧连发。
+                // 固件 AdcTask 一轮 12~16ms ⇒ 5Hz 刷新足够看压力趋势，也不抢串口带宽。
+                // 判据见接口文档 §6.11：STATUS≠0 时 SEQ 停住、电压保留最后一次成功值。
+                if (_adsWindow != null && _mb != null && tick % 2 == 1)
+                {
+                    try
+                    {
+                        var ads = _mb.ReadAds();
+                        var win = _adsWindow;
+                        Dispatcher.BeginInvoke(new Action(() => win?.UpdateAds(ads)));
+                    }
+                    catch (Exception ex)
+                    {
+                        if (_attitudeWindow?.MagCommitBusy != true)   // 落盘期超时属预期
+                            OnDebugLog($"ADS read error: {ex.Message}");
                     }
                 }
 
@@ -922,6 +966,134 @@ namespace GamepadSpeedController
             tDuty.Text = $"{s.DutyFb:F1}%";
             tPul.Text = $"{s.Pulse:F0}";
             tRpm.Text = $"{s.Rpm:F0} RPM";
+        }
+
+        // ========== 数据记录：点一次 → 每个勾选的风机各追加一行 CSV ==========
+
+        /// <summary>
+        /// 记录当前四路风机的「目标 / 实际占空比 / 转速」。
+        /// 每路一个文件 fan1.csv ~ fan4.csv，写在 exe 同级目录，追加写，表头只写一次。
+        /// 目标值取滑块（上位机设定），实际值取固件回读的 DUTY_FB（真实 CCR），
+        /// 两者不等就说明固件在中间做了钳位（DUTY_MIN/DUTY_MAX）或斜坡限速。
+        /// </summary>
+        private void BtnRecNow_Click(object sender, RoutedEventArgs e)
+        {
+            string note = (TxtRecNote.Text ?? "").Trim();
+
+            var rows = new (int ch, string name, CheckBox ck, Slider sl)[]
+            {
+                (1, "风机1", CkRec1, SlFan1Duty),
+                (2, "风机2", CkRec2, SlFan2Duty),
+                (3, "风机3", CkRec3, SlFan3Duty),
+                (4, "风机4", CkRec4, SlFan4Duty),
+            };
+
+            if (rows.All(r => r.ck.IsChecked != true))
+            {
+                TxtRecStatus.Text = "没有勾选任何风机";
+                TxtRecStatus.Foreground = Brushes.Firebrick;
+                return;
+            }
+
+            int wrote = 0;
+            var errs = new List<string>();
+
+            foreach (var r in rows)
+            {
+                if (r.ck.IsChecked != true) continue;
+                try
+                {
+                    AppendFanCsv(r.ch, r.name, (int)Math.Round(r.sl.Value), _fanStates[r.ch - 1], note);
+                    wrote++;
+                }
+                catch (Exception ex)
+                {
+                    errs.Add($"{r.name}: {ex.Message}");
+                }
+            }
+
+            if (errs.Count > 0)
+            {
+                TxtRecStatus.Text = "写入失败 → " + string.Join(" / ", errs);
+                TxtRecStatus.Foreground = Brushes.Firebrick;
+                return;
+            }
+
+            // 自动模式下滑块被禁用，「目标」列记的是手动备份值，容易误读，显式提示
+            bool auto = _fanPre.Params.Mode != 0;
+            TxtRecStatus.Text = auto
+                ? $"已记录 {wrote} 路 · {DateTime.Now:HH:mm:ss}（非手动模式，目标列为备份值）"
+                : $"已记录 {wrote} 路 · {DateTime.Now:HH:mm:ss}";
+            TxtRecStatus.Foreground = auto ? Brushes.DarkOrange : Brushes.Green;
+        }
+
+        private const string CsvHeader =
+            "日期,时间,风机,拉力(N),目标占空比(%),实际占空比(%),转速(RPM),脉冲累计";
+
+        private static void AppendFanCsv(int ch, string name, int targetDuty, FanState s, string note)
+        {
+            string dir  = AppDomain.CurrentDomain.BaseDirectory;
+            string path = Path.Combine(dir, $"fan{ch}.csv");
+            bool needHeader = true;
+
+            if (File.Exists(path) && new FileInfo(path).Length > 0)
+            {
+                string? first;
+                using (var sr = new StreamReader(path, Encoding.UTF8,
+                                                 detectEncodingFromByteOrderMarks: true))
+                {
+                    first = sr.ReadLine();
+                }
+
+                if (first == CsvHeader)
+                {
+                    needHeader = false;
+                }
+                else
+                {
+                    // 表头对不上 = 旧版本留下的文件（列定义变过）。
+                    // 直接追加会让新旧行错列，所以另起一个带时间戳的文件，
+                    // 旧数据原样保留，不删不覆盖。
+                    path = Path.Combine(dir, $"fan{ch}_{DateTime.Now:yyyyMMdd_HHmmss}.csv");
+                }
+            }
+
+            using var sw = new StreamWriter(path, append: true, new UTF8Encoding(true));
+            if (needHeader)
+                sw.WriteLine(CsvHeader);
+
+            // 日期和时间**必须拆成两列**：整串 "2026-11-07 14:38:59.000" 会被 Excel
+            // 自动识别成日期时间类型，默认列宽装不下，显示时左半截被裁掉，
+            // 屏幕上只剩 "38:59.0" 这种残片（2026-11-07 实测踩过）。
+            // 拆开后 "2026-11-07" 和 "14:38:59" 各自都能完整显示。
+            var now = DateTime.Now;
+            sw.WriteLine(string.Join(",",
+                now.ToString("yyyy-MM-dd"),
+                now.ToString("HH:mm:ss"),
+                name,
+                CsvEsc(note),
+                targetDuty.ToString(),
+                s.DutyFb.ToString("F1"),
+                s.Rpm.ToString("F0"),
+                s.Pulse.ToString("F0")));
+        }
+
+        /// <summary>CSV 字段转义：含逗号/引号/换行时整体加引号，内部引号翻倍</summary>
+        private static string CsvEsc(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            if (s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) < 0) return s;
+            return "\"" + s.Replace("\"", "\"\"") + "\"";
+        }
+
+        private void BtnRecOpen_Click(object sender, RoutedEventArgs e)
+        {
+            try { Process.Start("explorer.exe", AppDomain.CurrentDomain.BaseDirectory); }
+            catch (Exception ex)
+            {
+                TxtRecStatus.Text = "打开文件夹失败：" + ex.Message;
+                TxtRecStatus.Foreground = Brushes.Firebrick;
+            }
         }
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)

@@ -273,87 +273,53 @@
 
                 <Border BorderBrush="#DDDDDD" BorderThickness="0,1,0,0" Height="1" Margin="0,6,0,0"/>
 
-                <!-- ============ ⑤ 【临时诊断】I2C 链路健康度（固件 0x0184~0x018C）============
-                     ⚠️🔴 与固件同名的"临时诊断区"配套。现行决定：测试期间保留、host 先对齐；
-                     **将来固件删除 0x0184~0x018C 时，本块要一起删**（连同 AttitudeWindow.xaml.cs
-                     的 UpdateMagDiag() 与 ModbusClient 的对应常量/字段）。 -->
+                <!-- ============ ⑤ 磁力计链路健康（判据见 UpdateMagDiag）============
+                     数据源只剩固件仍在维护的 4 个量：0x014B MAG_STATUS、0x017C MAG_INIT_ERR、
+                     0x014A MAG_ENABLE、0x017E~0x0183 MAG_X/Y/Z。
+                     🔴 原【临时诊断区】0x0184~0x018C（MAG_OK/ERR/RECOVER）已随固件 cbc867a
+                     整段删除、恒读 0 —— 别再按"MAG_OK 不涨"判卡死，那会永久误报。 -->
                 <Grid Margin="0,5,0,0">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="1.4*"/>
+                        <ColumnDefinition Width="0.7*"/>
+                        <ColumnDefinition Width="0.7*"/>
+                        <ColumnDefinition Width="1.2*"/>
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="20"/>
-                        <RowDefinition Height="20"/>
-                        <RowDefinition Height="20"/>
+                        <RowDefinition Height="18"/>
                     </Grid.RowDefinitions>
 
                     <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal">
                         <Border x:Name="GlitchLamp" Width="11" Height="11" CornerRadius="6"
                                 Background="#BDBDBD" Margin="0,0,5,0" VerticalAlignment="Center"
-                                ToolTip="灰 = 未建立链路　绿 = 健康　黄闪 = 毛刺发生但已被自愈救回　红 = 卡死（MAG_OK 冻结）"/>
+                                ToolTip="灰 = 未建立 / 已关闭　绿 = 九轴正常　红 = 固件已降级 或 读数冻结"/>
                         <TextBlock x:Name="TxtGlitch" Text="--" Foreground="#555555" FontSize="11"
                                    FontWeight="Bold" VerticalAlignment="Center"/>
                     </StackPanel>
                     <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal">
                         <TextBlock Text="ACTIVE" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
-                                   ToolTip="0x014B MAG_STATUS。**分辨固件版本的关键**：=1 旧判据(present&amp;&amp;enable)；=0 含 09-29 的读数健康判据(fail_streak&lt;3)"/>
+                                   ToolTip="0x014B MAG_STATUS：1=九轴在跑；0=六轴（固件判据 present &amp;&amp; enable &amp;&amp; 连续读失败&lt;3）"/>
                         <TextBlock x:Name="TxtMagActive2" Text="--" Foreground="#333333" FontSize="11"
                                    FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
                     <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal">
-                        <TextBlock Text="RECOVER" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
-                                   ToolTip="0x018C：I2C3 自愈复位次数 = 毛刺发生次数。括号内为本次刷新窗口内的增量"/>
-                        <TextBlock x:Name="TxtMagRecover" Text="--" Foreground="#333333" FontSize="11"
+                        <TextBlock Text="ENABLE" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
+                                   ToolTip="0x014A：1=允许九轴 0=强制六轴（断电保持，由上面两个按钮写）"/>
+                        <TextBlock x:Name="TxtMagEnable" Text="--" Foreground="#333333" FontSize="11"
                                    FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
                     <StackPanel Grid.Row="0" Grid.Column="3" Orientation="Horizontal">
-                        <TextBlock Text="OK" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
-                                   ToolTip="0x0188：I2C 读成功累计（100 Hz 读取，正常约每秒 +100）。不涨即卡死"/>
-                        <TextBlock x:Name="TxtMagOk" Text="--" Foreground="#333333" FontSize="11"
-                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
-                    </StackPanel>
-                    <StackPanel Grid.Row="0" Grid.Column="4" Orientation="Horizontal">
-                        <TextBlock Text="ERR" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
-                                   ToolTip="0x0187：I2C 读失败累计。ERR 还在涨 = 固件仍在校验总线；ERR 也冻结 = 读取循环整体停摆"/>
-                        <TextBlock x:Name="TxtMagErr" Text="--" Foreground="#333333" FontSize="11"
+                        <TextBlock Text="读数" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
+                                   ToolTip="MAG_X/Y/Z 是否还在变。连续 2s 一个 bit 都不变 ⇒ 读数冻结（固件侧发现不了这个盲区）"/>
+                        <TextBlock x:Name="TxtMagMove" Text="--" Foreground="#333333" FontSize="11"
                                    FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
 
-                    <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal">
-                        <TextBlock Text="HAL" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
-                                   ToolTip="0x0189：最后一次 HAL 返回码。0=OK 1=ERROR 2=BUSY 3=TIMEOUT"/>
-                        <TextBlock x:Name="TxtMagHal" Text="--" Foreground="#333333" FontSize="11"
-                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
-                    </StackPanel>
-                    <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal">
-                        <TextBlock Text="STATE" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
-                                   ToolTip="0x018A：hi2c3.State。0x20=READY 0x24=BUSY 0xA0=TIMEOUT 0xE0=ERROR"/>
-                        <TextBlock x:Name="TxtMagI2cState" Text="--" Foreground="#333333" FontSize="11"
-                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
-                    </StackPanel>
-                    <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal">
-                        <TextBlock Text="ECODE" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
-                                   ToolTip="0x018B：hi2c3.ErrorCode。0x04=AF(NACK) 0x01=BERR 0x02=ARLO 0x20=TIMEOUT"/>
-                        <TextBlock x:Name="TxtMagEcode" Text="--" Foreground="#333333" FontSize="11"
-                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
-                    </StackPanel>
-                    <StackPanel Grid.Row="1" Grid.Column="3" Orientation="Horizontal">
-                        <TextBlock Text="融合" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
-                                   ToolTip="实测融合频率。A1（实测 dt）落地后此值**不再需要对齐任何常量**，仅作监控；&lt;900 Hz 会变色"/>
-                        <TextBlock x:Name="TxtMagFusion" Text="--" Foreground="#333333" FontSize="11"
-                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
-                    </StackPanel>
-
-                    <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="5" Orientation="Horizontal">
-                        <TextBlock Text="RAW" Foreground="#9E9E9E" FontSize="11" VerticalAlignment="Center"
-                                   ToolTip="0x0184~0x0186：int16 原始计数（不乘 0.3）。仅排障用，标定采集请用上面的 μT"/>
-                        <TextBlock x:Name="TxtMagRaw" Text="--" Foreground="#333333" FontSize="11"
-                                   FontFamily="Consolas" Margin="5,0,0,0" VerticalAlignment="Center"/>
-                    </StackPanel>
+                    <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="4" FontSize="10"
+                               Foreground="#9E9E9E" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               Text="红灯两种：固件已降级(ACTIVE=0) / 读数冻结(ACTIVE=1 但三轴不动)；灰灯 = 未建立或已关闭"/>
                 </Grid>
             </StackPanel>
         </Border>
